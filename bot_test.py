@@ -25,7 +25,7 @@ SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*$")
 
 MSK = timezone(timedelta(hours=3))
 
-# Заполняется в main: True, если наша команда - хозяева (первая в счёте)
+# Заполняется в main: True, если наша команда — хозяева (первая в счёте)
 OUR_IS_HOME = True
 
 def tg(method, **params):
@@ -100,7 +100,7 @@ def parse_teams(md):
     return "Хозяева", "Гости"
 
 def parse_html_events(html, team1, team2):
-    """Тип события (гол/ЖК/КК) и сторона - из HTML-классов таймлайна."""
+    """Тип события (гол/ЖК/КК) и сторона — из HTML-классов таймлайна."""
     soup = BeautifulSoup(html, "html.parser")
     events = []
     for el in soup.select(".game-timeline__event"):
@@ -132,7 +132,7 @@ def parse_html_events(html, team1, team2):
     return events
 
 def parse_md_events(md):
-    """Голы и счёт - из протокола: счёт меняется только в строках с голом."""
+    """Голы и счёт — из протокола: счёт меняется только в строках с голом."""
     events = []
     score = [0, 0]
     for raw in md.splitlines():
@@ -201,7 +201,7 @@ def merge_events(md_events, html_events):
 
 def score_text_for(sc):
     """Текст счёта с учётом того, хозяева мы или гости.
-    sc - счёт [хозяева, гости]."""
+    sc — счёт [хозяева, гости]."""
     if OUR_IS_HOME:
         our, opp = sc[0], sc[1]
     else:
@@ -239,16 +239,14 @@ def render_post(ev):
                     "🟡 " + p + "\n"
                     "⏱ На " + str(m) + "' минуте.")
         return ("🟡 <b>Жёлтая карточка у соперника</b>\n\n"
-                "🟡 Игрок соперника\n"
                 "⏱ На " + str(m) + "' минуте.")
 
     if ev["type"] == "red":
         if ours:
-            return ("🚨 <b>КРАСНАЯ КАРТОЧКА - УДАЛЕНИЕ У НАС</b>\n\n"
+            return ("🚨 <b>КРАСНАЯ КАРТОЧКА — УДАЛЕНИЕ У НАС</b>\n\n"
                     "🔴 " + p + "\n"
                     "⏱ На " + str(m) + "' минуте.")
         return ("🚨 <b>КРАСНАЯ КАРТОЧКА У СОПЕРНИКА!</b>\n\n"
-                "🔴 Игрок соперника\n"
                 "⏱ На " + str(m) + "' минуте.")
     return None
 
@@ -264,7 +262,7 @@ def save_state(s):
         json.dump(s, f)
 
 def find_match_url(cal_md):
-    """Ищем в календаре наш матч: приоритет - будущая игра (- : -)."""
+    """Ищем в календаре наш матч: приоритет — будущая игра (- : -)."""
     upcoming = ""
     any_match = ""
     for raw in cal_md.splitlines():
@@ -289,7 +287,7 @@ def main():
         STATE_FILE = "test_state.json"
     else:
         if (now.month, now.day) != MATCH_DAY:
-            print("Сегодня не день матча - выходим")
+            print("Сегодня не день матча — выходим")
             return
         cal = jina(CALENDAR_URL)
         match_url = find_match_url(cal) if cal else ""
@@ -309,7 +307,7 @@ def main():
         print("Это не наш матч:", team1, team2)
         return
 
-    # Определяем, хозяева мы или гости
+    # Ключевое: определяем, хозяева мы или гости
     OUR_IS_HOME = OUR_KEY in team1.upper()
 
     st = load_state()
