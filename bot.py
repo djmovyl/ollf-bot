@@ -70,27 +70,29 @@ def find_next_match(st):
         year = now.year if mon >= 7 else now.year + 1
         start = datetime(year, mon, int(day), int(hour), int(minute), tzinfo=MSK)
         pos = m.start()
-        # Берём большой кусок текста вокруг даты — так мы точно захватим команды
-        frag = md[max(0, pos - 400): min(len(md), pos + 400)]
+        # Берём кусок побольше вокруг даты — чтобы точно захватить команды и счёт
+        frag = md[max(0, pos - 250): min(len(md), pos + 250)]
         candidates.append({"start": start, "frag": frag})
 
     upcoming = []
     for c in candidates:
         frag = c["frag"]
-        # Ищем FC ITPROVIDER в этом фрагменте
+        # Ищем упоминание FC ITPROVIDER в этом куске
         if HOME not in frag:
             continue
 
-        # Вариант 1: «Триумф 3 FC ITPROVIDER 4»
-        m1 = re.search(r"([А-Яа-яЁё0-9\s\.]+)\s+\d+\s+" + re.escape(HOME) + r"\s+\d+", frag)
-        # Вариант 2: «FC ITPROVIDER 3 Триумф 4»
-        m2 = re.search(re.escape(HOME) + r"\s+\d+\s+([А-Яа-яЁё0-9\s\.]+)\s+\d+", frag)
+        # Ищем паттерн «Команда X FC ITPROVIDER Y» или «FC ITPROVIDER X Команда Y»
+        # Разрешаем любые символы между словами, главное — рядом цифры и наша команда
+        # Вариант 1: соперник слева, потом цифры, потом FC ITPROVIDER, потом цифры
+        m1 = re.search(r"([А-Яа-яЁё0-9\s\.]+)\s+(\d+)\s+" + re.escape(HOME) + r"\s+(\d+)", frag)
+        # Вариант 2: FC ITPROVIDER слева, потом цифры, потом соперник, потом цифры
+        m2 = re.search(re.escape(HOME) + r"\s+(\d+)\s+([А-Яа-яЁё0-9\s\.]+)\s+(\d+)", frag)
 
         opponent = None
         if m1:
             opponent = m1.group(1).strip()
         elif m2:
-            opponent = m2.group(1).strip()
+            opponent = m2.group(2).strip()
 
         if opponent:
             upcoming.append({"start": c["start"], "opponent": opponent})
