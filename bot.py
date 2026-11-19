@@ -52,43 +52,48 @@ def jina_html(url):
         print("jina html error:", e)
         return ""
 
-# --- Календарь: ищем дату, потом рядом FC ITPROVIDER ---
+# --- Календарь: парсим строки вида [Группа 1](ссылка)[15 НОЯБ. / ВС / 20:00 Триумф 3 FC ITPROVIDER 4] ---
 def find_next_match(st):
     md = jina(TOURNAMENT_URL)
     if not md:
         return None
 
-    # Ищем все даты вида «15 НОЯБ. / ВС / 19:10»
-    date_pat = re.compile(r"(\d{1,2})\s+([А-Яа-яЁё]{3})\.\s*/\s*[А-Яа-яЁё]{2,3}\s*/\s*(\d{1,2}):(\d{2})")
-    candidates = []
-    for m in date_pat.finditer(md):
-        day, mon_short, hour, minute = m.group(1), m.group(2).upper(), m.group(3), m.group(4)
-        mon = MONTHS.get(mon_short)
+    # Паттерн: [Группа N](ссылка)[дата Команда1 счёт Команда2 счёт]
+    # Дата: ДД МЕС. / ДН / ЧЧ:ММ
+    pattern = re.compile(
+        r"\[Группа\s+\d+\]\(https?://[^\)]+\)\["
+        r"(\d{1,2})\s+([А-Яа-яЁё]{3})\.\s*/\s*[А-Яа-яЁё]{2,3}\s*/\s*(\d{1,2}):(\d{2})"
+        r"\s+(.+?)\s+(\d+)\s+" + re.escape(HOME) + r"\s+(\d+)"
+        r"\]"
+    )
+
+    upcoming = []
+    for m in pattern.finditer(md):
+        day, mon_short, hour, minute, opp_name, score_opp, score_home = m.groups()
+        mon = MONTHS.get(mon_short.upper())
         if not mon:
             continue
         now = datetime.now(MSK)
         year = now.year if mon >= 7 else now.year + 1
         start = datetime(year, mon, int(day), int(hour), int(minute), tzinfo=MSK)
-        # Берём фрагмент вокруг даты, чтобы найти матч
-        pos = m.start()
-        frag = md[max(0, pos - 250): min(len(md), pos + 250)]
-        candidates.append({"start": start, "frag": frag})
+        opponent = opp_name.strip()
+        upcoming.append({"start": start, "opponent": opponent})
 
-    upcoming = []
-    for c in candidates:
-        # Ищем FC ITPROVIDER и вытаскиваем соперника
-        match_line = c["frag"]
-        m_team = re.search(r"(Триумф|Fortuna|Светлая Долина|AVENUEVIP|ФК Синара|Волна|Банк ДОМ.РФ|Импульс|[А-Яа-яЁё0-9\s\.]+)\s+\d+\s+" + re.escape(HOME) + r"\s+\d+", match_line)
-        if not m_team:
-            # Вариант: FC ITPROVIDER первый
-            m_team = re.search(re.escape(HOME) + r"\s+\d+\s+([А-Яа-яЁё0-9\s\.]+)\s+\d+", match_line)
-            if not m_team:
-                continue
-            opponent = m_team.group(1).strip()
-        else:
-            opponent = m_team.group(1).strip()
-
-        upcoming.append({"start": c["start"], "opponent": opponent})
+    if not upcoming:
+        # Если не нашли по жёсткому шаблону, пробуем мягкий поиск по дате + FC ITPROVIDER
+        date_pat = re.compile(r"(\d{1,2})\s+([А-Яа-яЁё]{3})\.\s*/\s*[А-Яа-яЁё]{2,3}\s*/\s*(\d{1,2}):(\d{2})")
+        for m in date_pat.finditer(md):
+            day, mon_short, hour, minute = m.group(1), m.group(2).upper(), m.group(3), m.group(4)
+            mon = MONTHS.get(mon_short)
+            if not mon: continue
+            year = now.year if mon >= 7 else now.year + 1
+            start = datetime(year, mon, int(day), int(hour), int(minute), tzinfo=MSK)
+            pos = m.start()
+            frag = md[max(0, pos - 250): min(len(md), pos + 250)]
+            # Ищем FC ITPROVIDER и соседа по счёту
+            m_team = re.search(r"([А-Яа-яЁё0-9\s\.]+)\s+\d+\s+" + re.escape(HOME) + r"\s+\d+", frag)
+            if m_team:
+                upcoming.append({"start": start, "opponent": m_team.group(1).strip()})
 
     if not upcoming:
         return None
