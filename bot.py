@@ -15,7 +15,7 @@ STATE_FILE = "state.json"
 
 MATCH_DAY = (22, 11)        # день матча: 22 ноября
 START_H, START_M = 15, 20   # время начала матча
-DURATION_MIN = 180          # через сколько минут после старта слать финал
+DURATION_MIN = 75          # через сколько минут после старта слать финал
 
 TIME_PAT = re.compile(r"(\d{1,3})'\s*(\d{2})''")
 SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*$")
