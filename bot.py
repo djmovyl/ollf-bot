@@ -58,49 +58,66 @@ def find_next_match(st):
     if not md:
         return None
 
-    # Ищем все даты: «15 НОЯБ. / ВС / 20:00»
-    date_pat = re.compile(r"(\d{1,2})\s+([А-Яа-яЁё]{3})\.\s*/\s*[А-Яа-яЁё]{2,3}\s*/\s*(\d{1,2}):(\d{2})")
+    # Разбиваем текст на строки, чтобы искать построчно
+    lines = md.splitlines()
+    
     candidates = []
-    for m in date_pat.finditer(md):
-        day, mon_short, hour, minute = m.group(1), m.group(2).upper(), m.group(3), m.group(4)
+    MONTHS = {"ЯНВ":1,"ФЕВ":2,"МАР":3,"АПР":4,"МАЙ":5,"ИЮН":6,"ИЮЛ":7,
+              "АВГ":8,"СЕН":9,"ОКТ":10,"НОЯ":11,"ДЕК":12}
+
+    for line in lines:
+        # Если в строке нет нашей команды - пропускаем
+        if HOME not in line:
+            continue
+        
+        # Ищем дату в формате "15 НОЯБ. / ВС / 20:00"
+        # Используем простой поиск подстроки, а не сложную регулярку
+        import re
+        date_match = re.search(r"(\d{1,2})\s+([А-Яа-яЁё]{3})\.\s*/\s*[А-Яа-яЁё]{2,3}\s*/\s*(\d{1,2}):(\d{2})", line)
+        
+        if not date_match:
+            # Если даты нет в этой строке, ищем её в соседних строках (иногда Jina ломает строки)
+            continue
+
+        day, mon_short, hour, minute = date_match.group(1), date_match.group(2).upper(), date_match.group(3), date_match.group(4)
         mon = MONTHS.get(mon_short)
         if not mon:
             continue
+            
         now = datetime.now(MSK)
         year = now.year if mon >= 7 else now.year + 1
         start = datetime(year, mon, int(day), int(hour), int(minute), tzinfo=MSK)
-        pos = m.start()
-        # Берём очень большой кусок вокруг даты — чтобы точно захватить весь блок матча
-        frag = md[max(0, pos - 400): min(len(md), pos + 400)]
-        candidates.append({"start": start, "frag": frag})
 
-    upcoming = []
-    for c in candidates:
-        frag = c["frag"]
-        if HOME not in frag:
-            continue
-
-        # Ищем соперника и счёт самым простым способом:
-        # Вариант 1: «Триумф 3 FC ITPROVIDER 4»
-        m1 = re.search(r"([А-Яа-яЁё0-9\s\.]+)\s+\d+\s+" + re.escape(HOME) + r"\s+(\d+)", frag)
-        # Вариант 2: «FC ITPROVIDER 3 Триумф 4»
-        m2 = re.search(re.escape(HOME) + r"\s+(\d+)\s+([А-Яа-яЁё0-9\s\.]+)\s+(\d+)", frag)
-
+        # Теперь ищем счёт и соперника прямо в этой строке.
+        # Ищем паттерн: "Команда X FC ITPROVIDER Y" или "FC ITPROVIDER X Команда Y"
+        # Мы ищем цифры рядом с названием команды.
+        
         opponent = None
+        
+        # Вариант 1: Соперник слева, потом цифры, потом наша команда, потом цифры
+        # Пример: Триумф 3 FC ITPROVIDER 4
+        m1 = re.search(r"([А-Яа-яЁё0-9\s\.]+)\s+(\d+)\s+" + re.escape(HOME) + r"\s+(\d+)", line)
+        
+        # Вариант 2: Наша команда слева, потом цифры, потом соперник, потом цифры
+        # Пример: FC ITPROVIDER 3 Триумф 4
+        m2 = re.search(re.escape(HOME) + r"\s+(\d+)\s+([А-Яа-яЁё0-9\s\.]+)\s+(\d+)", line)
+
         if m1:
             opponent = m1.group(1).strip()
         elif m2:
             opponent = m2.group(2).strip()
 
         if opponent:
-            upcoming.append({"start": c["start"], "opponent": opponent})
+            candidates.append({"start": start, "opponent": opponent, "line": line})
 
-    if not upcoming:
+    if not candidates:
         return None
-    upcoming.sort(key=lambda x: x["start"])
-    nxt = upcoming[0]
 
-    # Ссылка: ищем /match/ID в HTML и подбираем по сопернику и времени
+    # Сортируем по времени, берём ближайший будущий матч
+    candidates.sort(key=lambda x: x["start"])
+    nxt = candidates[0]
+
+    # Логика поиска ссылки (она осталась прежней, она надёжная)
     key = nxt["opponent"][:12] + nxt["start"].strftime("%d%H")
     if st.get("found_key") == key and st.get("found_url"):
         nxt["url"] = st["found_url"]
@@ -120,6 +137,7 @@ def find_next_match(st):
         st["found_key"] = key
         st["found_url"] = url
         save_state(st)
+
     return nxt
 
     html = jina_html(TOURNAMENT_URL)
