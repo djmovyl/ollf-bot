@@ -1,15 +1,21 @@
 name: ollf-bot
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    # каждые 5 минут по воскресеньям (UTC): 03:00–21:00 МСК
+    - cron: "*/5 0-20 * * 0"
   workflow_dispatch:
+    inputs:
+      match_url:
+        description: "Ссылка на матч для ручного прогона (необязательно)"
+        required: false
+        default: ""
 concurrency:
   group: ollf-bot
   cancel-in-progress: true
 permissions:
   contents: write
 jobs:
-  poll:
+  run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,20 +24,20 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install requests
+      - run: pip install requests beautifulsoup4
 
       - run: python bot.py
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL: ${{ secrets.CHANNEL }}
+          MATCH_URL_OVERRIDE: ${{ github.event.inputs.match_url }}
 
       - name: Сохранить состояние
-        if: always()
         run: |
           git config user.name "ollf-bot"
           git config user.email "bot@users.noreply.github.com"
           git add -A
-          git diff --cached --quiet || git commit -m "state"
+          git diff --cached --quiet || git commit -m "state update"
           git pull --rebase origin main || git rebase --abort
           git push origin main
         env:
