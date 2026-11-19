@@ -16,17 +16,16 @@ MONTHS = {"ЯНВ":1,"ФЕВ":2,"МАР":3,"АПР":4,"МАЙ":5,"ИЮН":6,
 
 # Строка календаря вида:
 # [Группа 1](https://ollf.ru/match/5905503)[15 НОЯБ. / ВС / 20:00 Триумф 3 FC ITPROVIDER 4]
-# [Группа 2](https://ollf.ru/match/5905700)[22 НОЯБ. / ВС / 15:20 FC ITPROVIDER - Напитки вместе -]
+# [Группа 2](https://ollf.ru/match/5905800)[22 НОЯБ. / ВС / 15:20 FC ITPROVIDER - Напитки вместе -]
+# Регулярка собрана из коротких кусков через +, чтобы её невозможно было разорвать при вставке
 LINE_PAT = re.compile(
-    r"
-$$
-Группа\s*\d*
-$$
-$(https://ollf\.ru/match/\d+)$\s*
-$$
-"    r"(\d{1,2})\s+([А-Яа-яЁё]{3,4})\.\s*/\s*[А-Яа-яЁё]{2,3}\s*/\s*(\d{1,2}):(\d{2})"    r"\s+([^
-$$
-]+)\]"
+    r"\[Группа\s*\d*\]\("
+    r"(https://ollf\.ru/match/\d+)"
+    r"\)\s*\["
+    r"(\d{1,2})\s+([А-Яа-яЁё]{3,4})\."
+    r"\s*/\s*[А-Яа-яЁё]{2,3}\s*/\s*"
+    r"(\d{1,2}):(\d{2})"
+    r"\s+([^\]]+)\]"
 )
 
 def tg(method, **params):
@@ -69,7 +68,7 @@ def jina_html(url):
         return ""
 
 def extract_opponent(text):
-    """«Триумф 3 FC ITPROVIDER 4» -> Триумф; «FC ITPROVIDER - Напитки вместе -» -> Напитки вместе"""
+    """Триумф 3 FC ITPROVIDER 4 -> Триумф; FC ITPROVIDER - Напитки вместе - -> Напитки вместе"""
     text = text.strip()
     if HOME not in text:
         return None
@@ -98,7 +97,7 @@ def find_next_match(st):
             continue
         year = now.year if mon >= 7 else now.year + 1
         start = datetime(year, mon, int(day), int(hh), int(mm), tzinfo=MSK)
-        # Берём только матчи, которые ещё не прошли (плюс небольшой запас)
+        # Берём только матчи, которые ещё не прошли (плюс запас на часовой сдвиг)
         if start >= now - timedelta(hours=2):
             upcoming.append({"start": start, "opponent": opponent, "url": url})
 
