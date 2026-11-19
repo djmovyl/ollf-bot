@@ -1,4 +1,4 @@
-import requests, re
+import os, requests, re
 
 TOKEN = os.environ["BOT_TOKEN"]
 CHAT  = os.environ["CHANNEL"]
