@@ -38,7 +38,6 @@ def save_state(s):
 def jina(url):
     try:
         r = requests.get("https://r.jina.ai/" + url, timeout=60)
-        print("jina:", url, "->", r.status_code, len(r.text))
         return r.text if r.status_code == 200 else ""
     except Exception as e:
         print("jina error:", e)
@@ -48,49 +47,69 @@ def jina_html(url):
     try:
         r = requests.get("https://r.jina.ai/" + url,
                          headers={"X-Return-Format": "html"}, timeout=60)
-        print("jina html:", r.status_code, len(r.text))
         return r.text if r.status_code == 200 else ""
     except Exception as e:
         print("jina html error:", e)
         return ""
 
-# --- Календарь: формат «22 НОЯБ. / ВС / 15:20 FC ITPROVIDER - Соперник -» ---
+# --- Календарь: ищем дату, потом рядом FC ITPROVIDER ---
 def find_next_match(st):
     md = jina(TOURNAMENT_URL)
     if not md:
         return None
-    now = datetime.now(MSK)
-    pat = re.compile(
-        r"(\d{1,2})\s+([А-Яа-яЁё]{3})\.\s*/\s*[А-Яа-яЁё]{2,3}\s*/\s*"
-        r"(\d{1,2}):(\d{2})\s+FC ITPROVIDER\s*[-–—]\s*(.+?)\s*[-–—]")
-    upcoming = []
-    for m in pat.finditer(md):
-        mon = MONTHS.get(m.group(2).upper())
-        if mon is None:
+
+    # Ищем все даты вида «15 НОЯБ. / ВС / 19:10»
+    date_pat = re.compile(r"(\d{1,2})\s+([А-Яа-яЁё]{3})\.\s*/\s*[А-Яа-яЁё]{2,3}\s*/\s*(\d{1,2}):(\d{2})")
+    candidates = []
+    for m in date_pat.finditer(md):
+        day, mon_short, hour, minute = m.group(1), m.group(2).upper(), m.group(3), m.group(4)
+        mon = MONTHS.get(mon_short)
+        if not mon:
             continue
+        now = datetime.now(MSK)
         year = now.year if mon >= 7 else now.year + 1
-        start = datetime(year, mon, int(m.group(1)),
-                         int(m.group(3)), int(m.group(4)), tzinfo=MSK)
-        if start >= now - timedelta(hours=3):
-            upcoming.append({"start": start, "opponent": m.group(5).strip()})
+        start = datetime(year, mon, int(day), int(hour), int(minute), tzinfo=MSK)
+        # Берём фрагмент вокруг даты, чтобы найти матч
+        pos = m.start()
+        frag = md[max(0, pos - 250): min(len(md), pos + 250)]
+        candidates.append({"start": start, "frag": frag})
+
+    upcoming = []
+    for c in candidates:
+        # Ищем FC ITPROVIDER и вытаскиваем соперника
+        match_line = c["frag"]
+        m_team = re.search(r"(Триумф|Fortuna|Светлая Долина|AVENUEVIP|ФК Синара|Волна|Банк ДОМ.РФ|Импульс|[А-Яа-яЁё0-9\s\.]+)\s+\d+\s+" + re.escape(HOME) + r"\s+\d+", match_line)
+        if not m_team:
+            # Вариант: FC ITPROVIDER первый
+            m_team = re.search(re.escape(HOME) + r"\s+\d+\s+([А-Яа-яЁё0-9\s\.]+)\s+\d+", match_line)
+            if not m_team:
+                continue
+            opponent = m_team.group(1).strip()
+        else:
+            opponent = m_team.group(1).strip()
+
+        upcoming.append({"start": c["start"], "opponent": opponent})
+
     if not upcoming:
         return None
     upcoming.sort(key=lambda x: x["start"])
     nxt = upcoming[0]
 
-    # Ссылку на матч кэшируем в state, чтобы не искать каждый раз
-    key = nxt["opponent"][:12] + nxt["start"].strftime("%d")
+    # Ссылка: ищем /match/ID в HTML и подбираем по сопернику и времени
+    key = nxt["opponent"][:12] + nxt["start"].strftime("%d%H")
     if st.get("found_key") == key and st.get("found_url"):
         nxt["url"] = st["found_url"]
         return nxt
 
-    ids = list(dict.fromkeys(re.findall(r'/match/(\d+)', jina_html(TOURNAMENT_URL))))[:20]
+    html = jina_html(TOURNAMENT_URL)
+    ids = list(dict.fromkeys(re.findall(r'/match/(\d+)', html)))[:30]
     url = None
     for mid in ids:
         t = jina(f"https://ollf.ru/match/{mid}")
-        if "ITPROVIDER" in t.upper() and nxt["opponent"][:6].upper() in t.upper():
+        if t and "ITPROVIDER" in t.upper() and nxt["opponent"][:6].upper() in t.upper():
             url = f"https://ollf.ru/match/{mid}"
             break
+
     nxt["url"] = url
     if url:
         st["found_key"] = key
@@ -98,16 +117,20 @@ def find_next_match(st):
         save_state(st)
     return nxt
 
-# --- События матча (черновой парсер — отрепетируем отдельно) ---
+# --- События матча (черновой парсер) ---
 def parse_events(text):
     events = []
-    pattern = (r"(\d{1,2})'\d{0,2}''?\s*[-–—]\s*([^\n–—|]+?)\s*[-–—]\s*"
-               r"([^\n–—|]+?)\s*[-–—]\s*([^\n]+)")
+    # Пример строки: «38' — Бакиров Ленар — ассист Кажев Марат — FC ITPROVIDER»
+    pattern = (r"(\d{1,2})'\s*[-–—]\s*([^\n–—|]+?)\s*[-–—]\s*"
+               r"([^\n–—|]*?)\s*[-–—]\s*([А-Яа-яЁё0-9\s.]+)")
     for m in re.finditer(pattern, text):
-        events.append({"minute": int(m.group(1)),
-                       "player": m.group(2).strip(),
-                       "assist": m.group(3).strip(),
-                       "team": m.group(4).strip()})
+        minute, player, assist, team = m.groups()
+        events.append({
+            "minute": int(minute),
+            "player": player.strip(),
+            "assist": assist.strip() if assist else None,
+            "team": team.strip()
+        })
     return events
 
 def is_home(team):
@@ -130,11 +153,11 @@ def post_event(ev, st):
 
 def main():
     st = load_state()
-    save_state(st)   # state.json создаётся всегда — git больше не споткнётся
+    save_state(st)  # state.json всегда существует
 
     nxt = find_next_match(st)
 
-    # Диагностика при ручном запуске: всегда отчитываемся, что видим
+    # Диагностика при ручном запуске
     if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
         if nxt:
             st["calendar_ok"] = True
@@ -201,7 +224,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception:
-        # Любая ошибка приходит в канал — тишина больше невозможна
         send("🚨 <b>Ошибка бота:</b>\n<pre>" +
              traceback.format_exc()[-3500:].replace("&", "&amp;").replace("<", "&lt;") +
              "</pre>")
