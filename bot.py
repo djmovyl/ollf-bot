@@ -1,42 +1,240 @@
-import os, re, json, time, requests, traceback
+import os
+import re
+import time
+import json
+import requests
+import traceback
 from datetime import datetime, timedelta, timezone
+from bs4 import BeautifulSoup
 
-TOKEN   = os.environ["BOT_TOKEN"]
+TOKEN = os.environ["BOT_TOKEN"]
 CHANNEL = os.environ["CHANNEL"]
-TOURNAMENT_URL = "https://ollf.ru/tournament/1067343"
-HOME = "FC ITPROVIDER"
+CALENDAR_URL = "https://ollf.ru/tournament/1067343/calendar"
+OUR_KEY = "ITPROVIDER"
 STATE_FILE = "state.json"
 
+MATCH_DAY = (22, 11)        # день матча: 22 ноября
+START_H, START_M = 15, 20   # время начала матча
+DURATION_MIN = 180          # через сколько минут после старта слать финал
+
+TIME_PAT = re.compile(r"(\d{1,3})'\s*(\d{2})''")
+SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*$")
+
 MSK = timezone(timedelta(hours=3))
-POLL_SECONDS = 60
-LOOP_MINUTES = 4
-
-MONTHS = {"ЯНВ":1,"ФЕВ":2,"МАР":3,"АПР":4,"МАЙ":5,"ИЮН":6,
-          "ИЮЛ":7,"АВГ":8,"СЕН":9,"ОКТ":10,"НОЯ":11,"ДЕК":12}
-
-# Строка календаря вида:
-# [Группа 1](https://ollf.ru/match/5905503)[15 НОЯБ. / ВС / 20:00 Триумф 3 FC ITPROVIDER 4]
-# [Группа 2](https://ollf.ru/match/5905800)[22 НОЯБ. / ВС / 15:20 FC ITPROVIDER - Напитки вместе -]
-# Регулярка собрана из коротких кусков через +, чтобы её невозможно было разорвать при вставке
-LINE_PAT = re.compile(
-    r"\[Группа\s*\d*\]\("
-    r"(https://ollf\.ru/match/\d+)"
-    r"\)\s*\["
-    r"(\d{1,2})\s+([А-Яа-яЁё]{3,4})\."
-    r"\s*/\s*[А-Яа-яЁё]{2,3}\s*/\s*"
-    r"(\d{1,2}):(\d{2})"
-    r"\s+([^\]]+)\]"
-)
 
 def tg(method, **params):
-    r = requests.post(f"https://api.telegram.org/bot{TOKEN}/{method}",
+    r = requests.post("https://api.telegram.org/bot" + TOKEN + "/" + method,
                       data=params, timeout=20)
     return r.json()
 
+def esc(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 def send(text):
-    res = tg("sendMessage", chat_id=CHANNEL, text=text[:3900], parse_mode="HTML")
+    res = tg("sendMessage", chat_id=CHANNEL, text=text[:3900],
+             parse_mode="HTML")
     if not res.get("ok"):
         print("Telegram error:", res)
+
+def jina(url, html=False):
+    headers = {"X-Return-Format": "html"} if html else {}
+    for attempt in range(4):
+        try:
+            r = requests.get("https://r.jina.ai/" + url,
+                             headers=headers, timeout=90)
+            print("jina:", url, "html" if html else "md",
+                  "->", r.status_code, len(r.text))
+            if r.status_code == 200 and r.text.strip():
+                return r.text
+            time.sleep(15)
+        except Exception as e:
+            print("jina error:", e)
+            time.sleep(15)
+    return ""
+
+def find_brackets(s):
+    """Содержимое всех квадратных скобок в строке (имена игроков и команд)."""
+    res = []
+    i = 0
+    while True:
+        a = s.find("[", i)
+        if a < 0:
+            break
+        b = s.find("]", a + 1)
+        if b < 0:
+            break
+        res.append(s[a + 1:b])
+        i = b + 1
+    return res
+
+def event_minute(time_str):
+    """Логика минут: 23' 01'' -> 24', 23' 00'' -> 23'."""
+    m = TIME_PAT.search(time_str)
+    if not m:
+        return None
+    raw_min = int(m.group(1))
+    sec = int(m.group(2))
+    return raw_min + 1 if sec > 0 else raw_min
+
+def parse_teams(md):
+    idx = md.find("События матча")
+    zone = md[:idx] if idx > 0 else md
+    names = []
+    for line in zone.splitlines():
+        if "teams/application?team_id=" not in line:
+            continue
+        for content in find_brackets(line):
+            c = content.strip()
+            if not c or c.startswith("!") or "Image" in c or ".png" in c:
+                continue
+            if c not in names:
+                names.append(c)
+    if len(names) >= 2:
+        return names[0], names[1]
+    return "Хозяева", "Гости"
+
+def parse_html_events(html, team1, team2):
+    """Тип события (гол/ЖК/КК) и сторона — из HTML-классов таймлайна."""
+    soup = BeautifulSoup(html, "html.parser")
+    events = []
+    for el in soup.select(".game-timeline__event"):
+        cls = el.get("class", [])
+        if "yellow-card" in cls:
+            etype = "yellow"
+        elif "red-card" in cls:
+            etype = "red"
+        elif "goal" in cls:
+            etype = "goal"
+        else:
+            continue
+        minute = event_minute(el.get("data-time", ""))
+        if minute is None:
+            continue
+        if "team1" in cls:
+            side = team1
+        elif "team2" in cls:
+            side = team2
+        else:
+            side = "?"
+        events.append({
+            "type": etype,
+            "minute": minute,
+            "player": el.get("data-player-first", "?"),
+            "assist": el.get("data-player-second") or None,
+            "side": side,
+        })
+    return events
+
+def parse_md_events(md):
+    """Голы и счёт — из протокола: счёт меняется только в строках с голом."""
+    events = []
+    score = [0, 0]
+    for raw in md.splitlines():
+        s = raw.strip()
+        if not s.startswith("*"):
+            continue
+        m = TIME_PAT.search(s)
+        if not m:
+            continue
+        minute = int(m.group(1)) + 1 if int(m.group(2)) > 0 else int(m.group(1))
+        players = find_brackets(s)
+        ms = SCORE_END.search(s)
+        scoring = None
+        if ms:
+            new_h = int(ms.group(1))
+            new_a = int(ms.group(2))
+            if new_h > score[0]:
+                scoring = "home"
+            elif new_a > score[1]:
+                scoring = "away"
+            score = [new_h, new_a]
+        events.append({"minute": minute, "players": players,
+                       "score": score[:], "scoring": scoring})
+    return events
+
+def merge_events(md_events, html_events):
+    merged = []
+    pool = list(html_events)
+    for e in md_events:
+        p0 = e["players"][0] if e["players"] else ""
+        match = None
+        for he in pool:
+            if he["minute"] == e["minute"] and he["player"] == p0:
+                match = he
+                break
+        if match is None:
+            for he in pool:
+                if he["minute"] == e["minute"]:
+                    match = he
+                    break
+        if match:
+            pool.remove(match)
+            etype = match["type"]
+            side = match["side"]
+            assist = match["assist"]
+            player = match["player"]
+        else:
+            assist = e["players"][1] if len(e["players"]) > 1 else None
+            player = p0 or "?"
+            if e["scoring"]:
+                etype = "goal"
+                side = "home" if e["scoring"] == "home" else "away"
+            else:
+                etype = "unknown"
+                side = "?"
+        merged.append({
+            "type": etype,
+            "minute": e["minute"],
+            "player": player,
+            "assist": assist,
+            "side": side,
+            "score": e["score"],
+            "ours": OUR_KEY in side.upper(),
+        })
+    return merged
+
+def render_post(ev):
+    m = ev["minute"]
+    p = ev["player"]
+    a = ev.get("assist")
+    sc = ev["score"]
+    ours = ev["ours"]
+    who = ev["side"]
+    if ev["type"] == "goal":
+        pas = "🎯 Голевой пас: " + a + "\n" if a else ""
+        if ours:
+            return ("🔥⚽️ <b>Г-О-О-О-Л! 🔥⚽️</b>\n\n"
+                    "⚽ <b>АВТОР ГОЛА: " + p + "</b> 🌟\n"
+                    + pas
+                    + "⏱ На " + str(m) + "' минуте!\n\n"
+                    "Счёт: <b>" + str(sc[0]) + " : " + str(sc[1])
+                    + "</b> в нашу пользу! 🎉")
+        return ("😢 <b>Пропускаем...</b> 😢\n\n"
+                "На " + str(m) + "' минуте " + who
+                + " забивает.\n\n"
+                "Счёт: <b>" + str(sc[0]) + " : " + str(sc[1])
+                + "</b>. Не сдаёмся! 💪")
+    if ev["type"] == "yellow":
+        if ours:
+            return ("🟡 <b>ЖЁЛТАЯ КАРТОЧКА у нас</b>\n\n"
+                    "🟡 " + p + " (" + who + ")\n"
+                    "⏱ На " + str(m) + "' минуте.\n"
+                    "Аккуратнее дальше! 👀")
+        return ("🟡 <b>Жёлтая карточка у соперника</b>\n\n"
+                "🟡 " + p + " (" + who + ")\n"
+                "⏱ На " + str(m) + "' минуте.\n"
+                "Пользуемся моментом! 💪")
+    if ev["type"] == "red":
+        if ours:
+            return ("🚨 <b>КРАСНАЯ КАРТОЧКА — УДАЛЕНИЕ У НАС</b>\n\n"
+                    "🔴 " + p + " (" + who + ")\n"
+                    "⏱ На " + str(m) + "' минуте.\n"
+                    "Играем в меньшинстве! 😨")
+        return ("🚨 <b>КРАСНАЯ КАРТОЧКА У СОПЕРНИКА!</b>\n\n"
+                "🔴 " + p + " (" + who + ")\n"
+                "⏱ На " + str(m) + "' минуте.\n"
+                "Играем против десятерых — давим! 💪")
+    return None
 
 def load_state():
     try:
@@ -49,187 +247,105 @@ def save_state(s):
     with open(STATE_FILE, "w") as f:
         json.dump(s, f)
 
-def jina(url):
-    try:
-        r = requests.get("https://r.jina.ai/" + url, timeout=60)
-        print("jina:", url, "->", r.status_code, len(r.text))
-        return r.text if r.status_code == 200 else ""
-    except Exception as e:
-        print("jina error:", e)
-        return ""
-
-def jina_html(url):
-    try:
-        r = requests.get("https://r.jina.ai/" + url,
-                         headers={"X-Return-Format": "html"}, timeout=60)
-        return r.text if r.status_code == 200 else ""
-    except Exception as e:
-        print("jina html error:", e)
-        return ""
-
-def extract_opponent(text):
-    """Триумф 3 FC ITPROVIDER 4 -> Триумф; FC ITPROVIDER - Напитки вместе - -> Напитки вместе"""
-    text = text.strip()
-    if HOME not in text:
-        return None
-    idx = text.find(HOME)
-    before = text[:idx].strip().strip(" -–—").strip()
-    after = text[idx + len(HOME):].strip().strip(" -–—").strip()
-    opp = before or after
-    opp = re.sub(r"^\d+\s*", "", opp)
-    opp = re.sub(r"\s+\d+$", "", opp)
-    return opp.strip(" -–— ") or None
-
-def find_next_match(st):
-    md = jina(TOURNAMENT_URL)
-    if not md:
-        return None
-    now = datetime.now(MSK)
-
-    upcoming = []
-    for m in LINE_PAT.finditer(md):
-        url, day, mon_s, hh, mm, teams = m.groups()
-        mon = MONTHS.get(mon_s[:3].upper())
-        if mon is None:
+def find_match_url(cal_md):
+    """Ищем в календаре наш матч: приоритет — будущая игра (- : -)."""
+    upcoming = ""
+    any_match = ""
+    for raw in cal_md.splitlines():
+        s = raw.strip()
+        if OUR_KEY not in s or "ollf.ru/match/" not in s:
             continue
-        opponent = extract_opponent(teams)
-        if not opponent:
+        m = re.search(r"match/(\d+)", s)
+        if not m:
             continue
-        year = now.year if mon >= 7 else now.year + 1
-        start = datetime(year, mon, int(day), int(hh), int(mm), tzinfo=MSK)
-        # Берём только матчи, которые ещё не прошли (плюс запас на часовой сдвиг)
-        if start >= now - timedelta(hours=2):
-            upcoming.append({"start": start, "opponent": opponent, "url": url})
-
-    if not upcoming:
-        return None
-    upcoming.sort(key=lambda x: x["start"])
-    nxt = upcoming[0]
-
-    # Ссылка уже пришла из календаря; кэш — на случай, если она вдруг пропадёт
-    if not nxt.get("url"):
-        key = nxt["opponent"][:12] + nxt["start"].strftime("%d%H")
-        if st.get("found_key") == key and st.get("found_url"):
-            nxt["url"] = st["found_url"]
-            return nxt
-        html = jina_html(TOURNAMENT_URL)
-        for mid in list(dict.fromkeys(re.findall(r'/match/(\d+)', html)))[:30]:
-            t = jina(f"https://ollf.ru/match/{mid}")
-            if t and "ITPROVIDER" in t.upper() and nxt["opponent"][:6].upper() in t.upper():
-                nxt["url"] = f"https://ollf.ru/match/{mid}"
-                break
-
-    if nxt.get("url"):
-        st["found_key"] = nxt["opponent"][:12] + nxt["start"].strftime("%d%H")
-        st["found_url"] = nxt["url"]
-        save_state(st)
-    return nxt
-
-# --- События матча (черновой парсер — отрепетируем на матче 5905503) ---
-def parse_events(text):
-    events = []
-    pattern = (r"(\d{1,2})'\s*[-–—]\s*([^\n–—|]+?)\s*[-–—]\s*"
-               r"([^\n–—|]*?)\s*[-–—]\s*([^\n]+)")
-    for m in re.finditer(pattern, text):
-        minute, player, assist, team = m.groups()
-        events.append({"minute": int(minute),
-                       "player": player.strip(),
-                       "assist": (assist or "").strip() or None,
-                       "team": team.strip()})
-    return events
-
-def is_home(team):
-    return "ITPROVIDER" in team.upper()
-
-def post_event(ev, st):
-    if is_home(ev["team"]):
-        st["score_home"] += 1
-        text = (f"🔥⚽️ <b>Г-О-О-О-Л! 🔥⚽️</b>\n\n"
-                f"⚽ <b>АВТОР ГОЛА: {ev['player']}</b> 🌟\n"
-                + (f"🎯 Ассист: {ev['assist']}\n" if ev["assist"] else "")
-                + f"⏱ На {ev['minute']}' минуте!\n\n"
-                f"Счёт: <b>{st['score_home']} : {st['score_away']}</b> в нашу пользу! 🎉")
-    else:
-        st["score_away"] += 1
-        text = (f"😢 <b>Пропускаем...</b> 😢\n\n"
-                f"На {ev['minute']}' минуте соперник забивает.\n\n"
-                f"Счёт: <b>{st['score_home']} : {st['score_away']}</b>. Не сдаёмся! 💪")
-    send(text)
+        url = "https://ollf.ru/match/" + m.group(1)
+        any_match = url
+        if "- : -" in s:
+            upcoming = url
+    return upcoming or any_match
 
 def main():
-    st = load_state()
-    save_state(st)   # state.json существует всегда — git не споткнётся
-
-    nxt = find_next_match(st)
-
-    # Диагностика при ручном запуске: всегда отчитываемся в канал
-    if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        if nxt:
-            st["calendar_ok"] = True
-            save_state(st)
-            send(f"✅ <b>Календарь прочитан!</b>\n\n"
-                 f"🔍 {HOME} vs {nxt['opponent']}\n"
-                 f"🗓 {nxt['start']:%d.%m}, ⏰ {nxt['start']:%H:%M} (МСК)\n"
-                 f"🔗 {nxt.get('url') or 'ссылка уточняется'}")
-        else:
-            md = jina(TOURNAMENT_URL)
-            i = md.find("ITPROVIDER")
-            frag = md[max(0, i - 300): i + 300] if i > 0 else md[:600]
-            send("❌ <b>Матч не найден.</b> Фрагмент календаря:\n\n"
-                 f"<pre>{frag.replace('&', '&amp;').replace('<', '&lt;')}</pre>")
-
-    if not nxt:
-        print("Матч не найден — тихий выход (обычный запуск)")
-        return
-    if not nxt.get("url"):
-        print("Нет ссылки на матч — тихий выход")
-        return
-
-    match_id = nxt["url"].rstrip("/").split("/")[-1]
-    if st.get("match_id") != match_id:
-        st = {"seen_events": [], "score_home": 0, "score_away": 0,
-              "started": False, "final_posted": False,
-              "calendar_ok": st.get("calendar_ok", False),
-              "found_key": st.get("found_key"), "found_url": nxt["url"],
-              "match_id": match_id}
-
     now = datetime.now(MSK)
-    start = nxt["start"]
-    in_window = start - timedelta(minutes=10) <= now <= start + timedelta(minutes=115)
+    override = os.environ.get("MATCH_URL_OVERRIDE", "").strip()
 
-    deadline = now + timedelta(minutes=LOOP_MINUTES)
-    while True:
-        html = jina(nxt["url"])
-        if html:
-            now = datetime.now(MSK)
-            if not st["started"] and now >= start:
-                st["started"] = True
-                send(f"🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n"
-                     f"🆚 <b>{HOME} vs {nxt['opponent']}</b>\n\n"
-                     f"Держим кулаки за команду! 👊")
-            for ev in parse_events(html):
-                eid = f"{ev['minute']}-{ev['player']}"
-                if eid in st["seen_events"]:
-                    continue
-                if st["started"]:
-                    post_event(ev, st)
-                st["seen_events"].append(eid)
-            if st["started"] and not st["final_posted"] and "матч завершён" in html.lower():
-                st["final_posted"] = True
-                send(f"🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n"
-                     f"📊 Итоговый счёт: <b>{st['score_home']} : {st['score_away']}</b>\n\n"
-                     f"Спасибо за игру, команда! 🤝")
+    if override:
+        match_url = override
+        state_file = "state_override.json"
+    else:
+        if (now.month, now.day) != MATCH_DAY:
+            print("Сегодня не день матча — выходим")
+            return
+        state_file = STATE_FILE
+        cal = jina(CALENDAR_URL)
+        match_url = find_match_url(cal) if cal else ""
+        if not match_url:
+            print("Матч не найден в календаре")
+            return
+
+    global STATE_FILE
+    STATE_FILE = state_file
+
+    md = jina(match_url)
+    if not md:
+        print("Страница матча не скачалась")
+        return
+    time.sleep(5)
+    html = jina(match_url, html=True)
+
+    team1, team2 = parse_teams(md)
+    if OUR_KEY not in team1.upper() and OUR_KEY not in team2.upper():
+        print("Это не наш матч:", team1, team2)
+        return
+
+    st = load_state()
+    if override:
+        st = {"seen": [], "started": False, "final": False, "score": [0, 0]}
+
+    html_events = parse_html_events(html, team1, team2) if html else []
+    md_events = parse_md_events(md)
+    events = merge_events(md_events, html_events)
+
+    # Пост о начале матча — один раз, когда в протоколе появилось первое событие
+    if events and not st.get("started"):
+        st["started"] = True
         save_state(st)
-        if in_window and datetime.now(MSK) < deadline and not st.get("final_posted"):
-            time.sleep(POLL_SECONDS)
-        else:
-            break
+        send("🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n"
+             "🆚 <b>" + team1 + " vs " + team2 + "</b>\n\n"
+             "Держим кулаки за команду! 👊")
+
+    last_score = st.get("score", [0, 0])
+    for ev in events:
+        eid = str(ev["minute"]) + "-" + ev["type"] + "-" + ev["player"]
+        if eid in st["seen"]:
+            continue
+        if ev["type"] != "unknown":
+            post = render_post(ev)
+            if post:
+                time.sleep(2)
+                send(post)
+        if ev["type"] == "goal":
+            last_score = ev["score"]
+        st["seen"].append(eid)
+
+    st["score"] = last_score
+    st["match_url"] = match_url
+    save_state(st)
+
+    # Финальный пост — после окончания игрового времени, один раз
+    end_time = now.replace(hour=START_H, minute=START_M, second=0,
+                           microsecond=0) + timedelta(minutes=DURATION_MIN)
+    if now > end_time and st.get("started") and not st.get("final"):
+        st["final"] = True
+        save_state(st)
+        sc = st["score"]
+        send("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n"
+             "📊 Итоговый счёт: <b>" + str(sc[0]) + " : " + str(sc[1])
+             + "</b>\n\n"
+             "Спасибо за игру, команда! 🤝")
 
 if __name__ == "__main__":
     try:
         main()
     except Exception:
-        send("🚨 <b>Ошибка бота:</b>\n<pre>" +
-             traceback.format_exc()[-3500:].replace("&", "&amp;").replace("<", "&lt;") +
-             "</pre>")
+        print(traceback.format_exc())
         raise
