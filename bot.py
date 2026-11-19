@@ -1,150 +1,118 @@
-import os, json, re, requests, time
-from datetime import datetime, timedelta
+import os, re, json, time, requests
 
-TOKEN = os.environ["BOT_TOKEN"]
+TOKEN   = os.environ["BOT_TOKEN"]
 CHANNEL = os.environ["CHANNEL"]
-TOURNAMENT_URL = "https://ollf.ru/tournament/1067343"
-HOME_TEAM = "FC ITPROVIDER"
+MATCH_URL = os.environ.get("MATCH_URL", "https://ollf.ru/match/5905503")
 STATE_FILE = "state.json"
 
-def send(text, html=False):
-    params = {"chat_id": CHANNEL, "text": text}
-    if html:
-        params["parse_mode"] = "HTML"
-    try:
-        r = requests.get(f"https://api.telegram.org/bot{TOKEN}/sendMessage", params=params, timeout=15)
-        if not r.json().get("ok"):
-            print("Telegram error:", r.text)
-    except Exception as e:
-        print("Send error:", e)
+def tg(method, **params):
+    r = requests.post(f"https://api.telegram.org/bot{TOKEN}/{method}",
+                      data=params, timeout=20)
+    return r.json()
+
+def send(text):
+    # Telegram ограничивает длину сообщения 4096 символами
+    text = text[:3900]
+    res = tg("sendMessage", chat_id=CHANNEL, text=text, parse_mode="HTML")
+    if not res.get("ok"):
+        print("Telegram error:", res)
 
 def load_state():
     try:
         with open(STATE_FILE) as f:
             return json.load(f)
     except:
-        return {"next_match": None, "started": False, "final_posted": False}
+        return {"seen_events": , "score_home": 0, "score_away": 0, "finished": False}
 
-def save_state(state):
+def save_state(s):
     with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
+        json.dump(s, f)
 
-# Парсим турнирную страницу: ищем ближайший будущий матч с FC ITPROVIDER
-def find_next_match(html):
-    # Ищем строки вида: «FC ITPROVIDER – Напитки вместе, воскресенье 22 ноября, 15:20»
-    pattern = r"FC\s+ITPROVIDER\s*[–-]\s*([^<]+?)\s*,\s*(\d{1,2})\s+(\w+)\s*,\s*(\d{2}:\d{2})"
-    m = re.search(pattern, html, flags=re.IGNORECASE)
-    if not m:
-        # Пробуем обратный порядок: соперник – FC ITPROVIDER
-        pattern = r"([^<]+?)\s*[–-]\s*FC\s+ITPROVIDER\s*,\s*(\d{1,2})\s+(\w+)\s*,\s*(\d{2}:\d{2})"
-        m = re.search(pattern, html, flags=re.IGNORECASE)
-        if not m:
-            return None
-        opponent = m.group(1).strip()
-    else:
-        opponent = m.group(1).strip()
+def fetch_page(url):
+    # Получаем отрендеренную страницу через Jina
+    r = requests.get(f"https://r.jina.ai/{url}", timeout=60)
+    return r.text if r.status_code == 200 else ""
 
-    day, month_ru, time_str = m.group(2), m.group(3), m.group(4)
-    # Простой маппинг месяцев (можно расширить)
-    months = {"ноября": 11, "октября": 10, "декабря": 12, "сентября": 9}
-    month = months.get(month_ru.lower(), 11)
-    year = 2026  # можно брать из даты запуска, пока фиксим
+def parse_events(html):
+    events = 
+    # Ищем блоки событий в HTML (адаптировано под верстку ollf.ru)
+    # Примерный паттерн: время, тип, игрок, команда, ассист
+    # Регулярка упрощена для демонстрации — при необходимости докрутим точность
+    pattern = r'<span[^>]*class="time"[^>]*>(\d+)\'</span>\s*<span[^>]*class="type"[^>]*>([^<]+)</span>\s*<span[^>]*class="player"[^>]*>([^<]+)</span>\s*<span[^>]*class="team"[^>]*>([^<]+)</span>(?:\s*<span[^>]*class="assist"[^>]*>([^<]+)</span>)?'
+    for m in re.finditer(pattern, html, re.IGNORECASE | re.DOTALL):
+        minute, etype, player, team, assist = m.groups()
+        events.append({
+            "id": f"{minute}-{etype}-{player}",
+            "minute": int(minute),
+            "type": etype.strip(),
+            "player": player.strip(),
+            "team": team.strip(),
+            "assist": assist.strip() if assist else None
+        })
+    return events
 
-    try:
-        dt = datetime(year, month, int(day), int(time_str.split(":")[0]), int(time_str.split(":")[1]))
-        # Ссылка на матч: ищем /match/\d+ в HTML
-        match_link = re.search(r'/match/(\d+)', html)
-        match_url = f"https://ollf.ru{match_link.group(0)}" if match_link else None
-        return {
-            "opponent": opponent,
-            "start_time": dt,
-            "match_url": match_url
-        }
-    except Exception:
-        return None
+def is_home_team(team_name):
+    return "ITPROVIDER" in team_name.upper() or "FC ITPROVIDER" in team_name.upper()
 
-def celebrate_goal(scorer, assist, minute):
-    msg = (
-        "🔥⚽️ Г-О-О-О-Л! 🔥⚽️\n\n"
-        f"🥅 <b>{HOME_TEAM}</b> забивает!\n"
-        f"👤 Гол: <b>{scorer}</b>\n"
-    )
-    if assist:
-        msg += f"🎯 Ассист: {assist}\n"
-    msg += f"⏱ Время: {minute}'\n\n{STATE['match_url']}"
-    send(msg, html=True)
+def post_event(ev, st):
+    home = is_home_team(ev["team"])
+    text = ""
 
-def concede_goal(minute):
-    msg = (
-        "😢🥅 Пропускаем… 😢🥅\n\n"
-        f"⏱ На {minute}' минуте соперник забивает.\n\n{STATE['match_url']}"
-    )
-    send(msg, html=True)
+    if ev["type"] in ("Гол", "Goal"):
+        if home:
+            st["score_home"] += 1
+            text = (f"🔥⚽️ <b>Г-О-О-О-Л! 🔥⚽️</b>\n\n"
+                    f"⚽ <b>АВТОР ГОЛА: {ev['player']}</b> 🌟")
+            if ev["assist"]:
+                text += f"\n🎯 Ассист: {ev['assist']}"
+            text += f"\n⏱ На {ev['minute']}' минуте!\n\n"
+            text += f"Счёт: <b>{st['score_home']} : {st['score_away']}</b> в нашу пользу! 🎉"
+        else:
+            st["score_away"] += 1
+            text = (f"😢 <b>Пропускаем...</b> 😢\n\n"
+                    f"На {ev['minute']}' минуте соперник забивает.\n\n"
+                    f"Счёт: <b>{st['score_home']} : {st['score_away']}</b>. Не сдаёмся! 💪")
 
-def card_event(player, card_type, minute):
-    icon = "🟨" if card_type == "ЖК" else "🟥"
-    msg = f"{icon} <b>{player}</b> получает {card_type} на {minute}' минуте.\n{STATE['match_url']}"
-    send(msg, html=True)
+    elif ev["type"] in ("ЖК", "Жёлтая", "Yellow"):
+        icon = "🟨"
+        name = "жёлтую"
+        text = f"{icon} <b>{ev['player']}</b> получает {name} карточку на {ev['minute']}' минуте."
 
-def post_start(match):
-    STATE["next_match"] = match
-    STATE["started"] = True
-    STATE["match_url"] = match["match_url"]
-    save_state(STATE)
-    msg = (
-        f"⚽️🗓 Матч начался!\n\n"
-        f"🆚 <b>{HOME_TEAM} vs {match['opponent']}</b>\n"
-        f"⏰ Старт: {match['start_time'].strftime('%d.%m %H:%M')}\n"
-        f"🔗 {match['match_url']}\n\n"
-        "Держим кулаки за команду! 👊"
-    )
-    send(msg, html=True)
+    elif ev["type"] in ("КК", "Красная", "Red"):
+        icon = "🟥"
+        name = "красную"
+        text = f"{icon} <b>{ev['player']}</b> получает {name} карточку на {ev['minute']}' минуте."
 
-def post_final(match, final_score):
-    STATE["final_posted"] = True
-    save_state(STATE)
-    msg = (
-        f"🏁 Матч завершён!\n\n"
-        f"🆚 <b>{HOME_TEAM} vs {match['opponent']}</b>\n"
-        f"📊 Итоговый счёт: <b>{final_score}</b>\n"
-        f"🔗 {match['match_url']}\n\n"
-        "Спасибо за игру! 🤝"
-    )
-    send(msg, html=True)
+    if text:
+        send(text)
 
-STATE = load_state()
+def post_final(st):
+    if st["finished"]:
+        return
+    st["finished"] = True
+    send(f"🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n"
+         f"📊 Итоговый счёт: <b>{st['score_home']} : {st['score_away']}</b>\n\n"
+         f"Спасибо за игру, команда! 🤝")
 
 def main():
-    global STATE
-    try:
-        html = requests.get(TOURNAMENT_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=20).text
-    except Exception as e:
-        print("Tournament page error:", e)
+    st = load_state()
+    html = fetch_page(MATCH_URL)
+    if not html:
+        print("Не удалось получить страницу матча")
         return
 
-    next_match = find_next_match(html)
-    if not next_match:
-        print("Next match not found")
-        return
+    events = parse_events(html)
+    new_events = [e for e in events if e["id"] not in st["seen_events"]]
 
-    # Если нашли другой матч — сбрасываем состояние
-    if STATE.get("next_match") != next_match:
-        STATE = {"next_match": next_match, "started": False, "final_posted": False, "match_url": next_match["match_url"]}
-        save_state(STATE)
+    for ev in new_events:
+        post_event(ev, st)
+        st["seen_events"].append(ev["id"])
 
-    now = datetime.now()
-    start = next_match["start_time"]
+    # Проверка на завершение матча (ищем маркер финала в HTML)
+    if "матч завершён" in html.lower() or "final" in html.lower():
+        post_final(st)
 
-    # Старт матча: за 1–2 минуты до времени
-    if not STATE["started"] and now >= start - timedelta(minutes=1):
-        post_start(next_match)
-
-    # Финал: через 85 минут после старта
-    end_time = start + timedelta(minutes=85)
-    if STATE["started"] and not STATE["final_posted"] and now >= end_time:
-        # Здесь можно подтянуть итоговый счёт из календаря, если он уже обновился
-        final_score = "?"  # пока заглушка; можно дописать парсинг счёта из строки матча
-        post_final(next_match, final_score)
+    save_state(st)
 
 if __name__ == "__main__":
     main()
