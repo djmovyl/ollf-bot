@@ -11,16 +11,22 @@ TOKEN = os.environ["BOT_TOKEN"]
 CHANNEL = os.environ["CHANNEL"]
 CALENDAR_URL = "https://ollf.ru/tournament/1067343/calendar"
 OUR_KEY = "ITPROVIDER"
-STATE_FILE = "state.json"
 
-MATCH_DAY = (22, 11)        # день матча: 22 ноября
-START_H, START_M = 15, 20   # время начала матча
-DURATION_MIN = 75          # через сколько минут после старта слать финал
+# ====== РЕЖИМ ПРОДАКШЕН: матч из календаря ======
+PAST_MATCH = False
+MATCH_URL = ""  # не используется при PAST_MATCH=False
+
+MATCH_DAY = (22, 11)
+START_H, START_M = 15, 20
+DURATION_MIN = 75
 
 TIME_PAT = re.compile(r"(\d{1,3})'\s*(\d{2})''")
 SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*$")
 
 MSK = timezone(timedelta(hours=3))
+
+# Заполняется в main: True, если наша команда — хозяева (первая в счёте)
+OUR_IS_HOME = True
 
 def tg(method, **params):
     r = requests.post("https://api.telegram.org/bot" + TOKEN + "/" + method,
@@ -193,47 +199,55 @@ def merge_events(md_events, html_events):
         })
     return merged
 
+def score_text_for(sc):
+    """Текст счёта с учётом того, хозяева мы или гости.
+    sc — счёт [хозяева, гости]."""
+    if OUR_IS_HOME:
+        our, opp = sc[0], sc[1]
+    else:
+        our, opp = sc[1], sc[0]
+    shown = str(sc[0]) + " : " + str(sc[1])
+    if our > opp:
+        return "Счёт: <b>" + shown + "</b> в нашу пользу! 🎉"
+    if our < opp:
+        return "Счёт: <b>" + shown + "</b>. Не сдаёмся! 💪"
+    return "Счёт: <b>" + shown + "</b>. На табло ничья!"
+
 def render_post(ev):
     m = ev["minute"]
     p = ev["player"]
     a = ev.get("assist")
     sc = ev["score"]
     ours = ev["ours"]
-    who = ev["side"]
+
     if ev["type"] == "goal":
-        pas = "🎯 Голевой пас: " + a + "\n" if a else ""
+        st = score_text_for(sc)
         if ours:
+            pas = "🎯 Голевой пас: " + a + "\n" if a else ""
             return ("🔥⚽️ <b>Г-О-О-О-Л! 🔥⚽️</b>\n\n"
                     "⚽ <b>АВТОР ГОЛА: " + p + "</b> 🌟\n"
                     + pas
                     + "⏱ На " + str(m) + "' минуте!\n\n"
-                    "Счёт: <b>" + str(sc[0]) + " : " + str(sc[1])
-                    + "</b> в нашу пользу! 🎉")
+                    + st)
         return ("😢 <b>Пропускаем...</b> 😢\n\n"
-                "На " + str(m) + "' минуте " + who
-                + " забивает.\n\n"
-                "Счёт: <b>" + str(sc[0]) + " : " + str(sc[1])
-                + "</b>. Не сдаёмся! 💪")
+                "На " + str(m) + "' минуте соперник забивает.\n\n"
+                + st)
+
     if ev["type"] == "yellow":
         if ours:
             return ("🟡 <b>ЖЁЛТАЯ КАРТОЧКА у нас</b>\n\n"
-                    "🟡 " + p + " (" + who + ")\n"
-                    "⏱ На " + str(m) + "' минуте.\n"
-                    "Аккуратнее дальше! 👀")
+                    "🟡 " + p + "\n"
+                    "⏱ На " + str(m) + "' минуте.")
         return ("🟡 <b>Жёлтая карточка у соперника</b>\n\n"
-                "🟡 " + p + " (" + who + ")\n"
-                "⏱ На " + str(m) + "' минуте.\n"
-                "Пользуемся моментом! 💪")
+                "⏱ На " + str(m) + "' минуте.")
+
     if ev["type"] == "red":
         if ours:
             return ("🚨 <b>КРАСНАЯ КАРТОЧКА — УДАЛЕНИЕ У НАС</b>\n\n"
-                    "🔴 " + p + " (" + who + ")\n"
-                    "⏱ На " + str(m) + "' минуте.\n"
-                    "Играем в меньшинстве! 😨")
+                    "🔴 " + p + "\n"
+                    "⏱ На " + str(m) + "' минуте.")
         return ("🚨 <b>КРАСНАЯ КАРТОЧКА У СОПЕРНИКА!</b>\n\n"
-                "🔴 " + p + " (" + who + ")\n"
-                "⏱ На " + str(m) + "' минуте.\n"
-                "Играем против десятерых — давим! 💪")
+                "⏱ На " + str(m) + "' минуте.")
     return None
 
 def load_state():
@@ -265,29 +279,25 @@ def find_match_url(cal_md):
     return upcoming or any_match
 
 def main():
+    global STATE_FILE, OUR_IS_HOME
     now = datetime.now(MSK)
-    override = os.environ.get("MATCH_URL_OVERRIDE", "").strip()
 
-    if override:
-        match_url = override
-        state_file = "state_override.json"
+    if PAST_MATCH:
+        match_url = MATCH_URL
+        STATE_FILE = "test_state.json"
     else:
         if (now.month, now.day) != MATCH_DAY:
             print("Сегодня не день матча — выходим")
             return
-        state_file = STATE_FILE
         cal = jina(CALENDAR_URL)
         match_url = find_match_url(cal) if cal else ""
         if not match_url:
             print("Матч не найден в календаре")
             return
 
-    global STATE_FILE
-    STATE_FILE = state_file
-
     md = jina(match_url)
     if not md:
-        print("Страница матча не скачалась")
+        send("🧪 Диагностика: страница матча не скачалась (md пустой)")
         return
     time.sleep(5)
     html = jina(match_url, html=True)
@@ -297,15 +307,17 @@ def main():
         print("Это не наш матч:", team1, team2)
         return
 
+    # Ключевое: определяем, хозяева мы или гости
+    OUR_IS_HOME = OUR_KEY in team1.upper()
+
     st = load_state()
-    if override:
+    if PAST_MATCH:
         st = {"seen": [], "started": False, "final": False, "score": [0, 0]}
 
     html_events = parse_html_events(html, team1, team2) if html else []
     md_events = parse_md_events(md)
     events = merge_events(md_events, html_events)
 
-    # Пост о начале матча — один раз, когда в протоколе появилось первое событие
     if events and not st.get("started"):
         st["started"] = True
         save_state(st)
@@ -328,24 +340,37 @@ def main():
         st["seen"].append(eid)
 
     st["score"] = last_score
-    st["match_url"] = match_url
     save_state(st)
 
-    # Финальный пост — после окончания игрового времени, один раз
+    # Финальный пост: сравниваем НАШИ голы с голами соперника
     end_time = now.replace(hour=START_H, minute=START_M, second=0,
                            microsecond=0) + timedelta(minutes=DURATION_MIN)
     if now > end_time and st.get("started") and not st.get("final"):
         st["final"] = True
         save_state(st)
         sc = st["score"]
+        if OUR_IS_HOME:
+            our, opp = sc[0], sc[1]
+        else:
+            our, opp = sc[1], sc[0]
+
+        if our > opp:
+            verdict = "🎉 <b>ПОБЕДА!</b> 🎉"
+        elif our < opp:
+            verdict = "😔 <b>ПОРАЖЕНИЕ</b> 😔"
+        else:
+            verdict = "🤝 <b>НИЧЬЯ</b> 🤝"
+
         send("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n"
              "📊 Итоговый счёт: <b>" + str(sc[0]) + " : " + str(sc[1])
              + "</b>\n\n"
+             + verdict + "\n\n"
              "Спасибо за игру, команда! 🤝")
 
 if __name__ == "__main__":
     try:
         main()
     except Exception:
-        print(traceback.format_exc())
+        send("🚨 Ошибка:\n<pre>"
+             + esc(traceback.format_exc()[-2500:]) + "</pre>")
         raise
