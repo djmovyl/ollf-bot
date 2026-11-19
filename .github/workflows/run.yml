@@ -2,12 +2,13 @@ name: FC ITPROVIDER Match Bot
 
 on:
   schedule:
-    - cron: "*/1 * * * *"  # каждую минуту
-  workflow_dispatch:      # ручной запуск для тестов
+    - cron: "*/5 * * * *"   # каждые 5 минут, круглосуточно
+  workflow_dispatch:         # ручной запуск для проверки
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -15,4 +16,28 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Restore bot state
+        uses: actions/cache/restore@v4
+        with:
+          path: prod_state.json
+          key: bot-state-${{ github.run_id }}
+          restore-keys: |
+            bot-state-
+
+      - name: Run bot
+        run: python bot.py
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHANNEL: ${{ secrets.CHANNEL }}
+
+      - name: Save bot state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: prod_state.json
+          key: bot-state-${{ github.run_id }}
