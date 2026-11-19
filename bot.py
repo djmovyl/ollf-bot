@@ -107,4 +107,102 @@ def parse_events(text):
         events.append({"minute": int(m.group(1)),
                        "player": m.group(2).strip(),
                        "assist": m.group(3).strip(),
-                       "team":
+                       "team": m.group(4).strip()})
+    return events
+
+def is_home(team):
+    return "ITPROVIDER" in team.upper()
+
+def post_event(ev, st):
+    if is_home(ev["team"]):
+        st["score_home"] += 1
+        text = (f"🔥⚽️ <b>Г-О-О-О-Л! 🔥⚽️</b>\n\n"
+                f"⚽ <b>АВТОР ГОЛА: {ev['player']}</b> 🌟\n"
+                + (f"🎯 Ассист: {ev['assist']}\n" if ev["assist"] else "")
+                + f"⏱ На {ev['minute']}' минуте!\n\n"
+                f"Счёт: <b>{st['score_home']} : {st['score_away']}</b> в нашу пользу! 🎉")
+    else:
+        st["score_away"] += 1
+        text = (f"😢 <b>Пропускаем...</b> 😢\n\n"
+                f"На {ev['minute']}' минуте соперник забивает.\n\n"
+                f"Счёт: <b>{st['score_home']} : {st['score_away']}</b>. Не сдаёмся! 💪")
+    send(text)
+
+def main():
+    st = load_state()
+    save_state(st)   # state.json создаётся всегда — git больше не споткнётся
+
+    nxt = find_next_match(st)
+
+    # Диагностика при ручном запуске: всегда отчитываемся, что видим
+    if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+        if nxt:
+            st["calendar_ok"] = True
+            save_state(st)
+            send(f"✅ <b>Календарь прочитан!</b>\n\n"
+                 f"🔍 {HOME} vs {nxt['opponent']}\n"
+                 f"🗓 {nxt['start']:%d.%m}, ⏰ {nxt['start']:%H:%M} (МСК)\n"
+                 f"🔗 {nxt.get('url') or 'ссылка уточняется'}")
+        else:
+            md = jina(TOURNAMENT_URL)
+            i = md.find("ITPROVIDER")
+            frag = md[max(0, i - 300): i + 300] if i > 0 else md[:600]
+            send("❌ <b>Матч не найден.</b> Фрагмент календаря:\n\n"
+                 f"<pre>{frag.replace('&', '&amp;').replace('<', '&lt;')}</pre>")
+
+    if not nxt:
+        print("Матч не найден — тихий выход (обычный запуск)")
+        return
+    if not nxt.get("url"):
+        print("Нет ссылки на матч — тихий выход")
+        return
+
+    match_id = nxt["url"].rstrip("/").split("/")[-1]
+    if st.get("match_id") != match_id:
+        st = {"seen_events": [], "score_home": 0, "score_away": 0,
+              "started": False, "final_posted": False,
+              "calendar_ok": st.get("calendar_ok", False),
+              "found_key": st.get("found_key"), "found_url": nxt["url"],
+              "match_id": match_id}
+
+    now = datetime.now(MSK)
+    start = nxt["start"]
+    in_window = start - timedelta(minutes=10) <= now <= start + timedelta(minutes=115)
+
+    deadline = now + timedelta(minutes=LOOP_MINUTES)
+    while True:
+        html = jina(nxt["url"])
+        if html:
+            now = datetime.now(MSK)
+            if not st["started"] and now >= start:
+                st["started"] = True
+                send(f"🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n"
+                     f"🆚 <b>{HOME} vs {nxt['opponent']}</b>\n\n"
+                     f"Держим кулаки за команду! 👊")
+            for ev in parse_events(html):
+                eid = f"{ev['minute']}-{ev['player']}"
+                if eid in st["seen_events"]:
+                    continue
+                if st["started"]:
+                    post_event(ev, st)
+                st["seen_events"].append(eid)
+            if st["started"] and not st["final_posted"] and "матч завершён" in html.lower():
+                st["final_posted"] = True
+                send(f"🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n"
+                     f"📊 Итоговый счёт: <b>{st['score_home']} : {st['score_away']}</b>\n\n"
+                     f"Спасибо за игру, команда! 🤝")
+        save_state(st)
+        if in_window and datetime.now(MSK) < deadline and not st.get("final_posted"):
+            time.sleep(POLL_SECONDS)
+        else:
+            break
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        # Любая ошибка приходит в канал — тишина больше невозможна
+        send("🚨 <b>Ошибка бота:</b>\n<pre>" +
+             traceback.format_exc()[-3500:].replace("&", "&amp;").replace("<", "&lt;") +
+             "</pre>")
+        raise
