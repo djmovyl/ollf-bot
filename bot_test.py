@@ -25,6 +25,9 @@ SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*$")
 
 MSK = timezone(timedelta(hours=3))
 
+# Заполняется в main: True, если наша команда — хозяева (первая в счёте)
+OUR_IS_HOME = True
+
 def tg(method, **params):
     r = requests.post("https://api.telegram.org/bot" + TOKEN + "/" + method,
                       data=params, timeout=20)
@@ -56,6 +59,7 @@ def jina(url, html=False):
     return ""
 
 def find_brackets(s):
+    """Содержимое всех квадратных скобок в строке (имена игроков и команд)."""
     res = []
     i = 0
     while True:
@@ -70,6 +74,7 @@ def find_brackets(s):
     return res
 
 def event_minute(time_str):
+    """Логика минут: 23' 01'' -> 24', 23' 00'' -> 23'."""
     m = TIME_PAT.search(time_str)
     if not m:
         return None
@@ -95,6 +100,7 @@ def parse_teams(md):
     return "Хозяева", "Гости"
 
 def parse_html_events(html, team1, team2):
+    """Тип события (гол/ЖК/КК) и сторона — из HTML-классов таймлайна."""
     soup = BeautifulSoup(html, "html.parser")
     events = []
     for el in soup.select(".game-timeline__event"):
@@ -126,6 +132,7 @@ def parse_html_events(html, team1, team2):
     return events
 
 def parse_md_events(md):
+    """Голы и счёт — из протокола: счёт меняется только в строках с голом."""
     events = []
     score = [0, 0]
     for raw in md.splitlines():
@@ -192,53 +199,57 @@ def merge_events(md_events, html_events):
         })
     return merged
 
+def score_text_for(sc):
+    """Текст счёта с учётом того, хозяева мы или гости.
+    sc — счёт [хозяева, гости]."""
+    if OUR_IS_HOME:
+        our, opp = sc[0], sc[1]
+    else:
+        our, opp = sc[1], sc[0]
+    shown = str(sc[0]) + " : " + str(sc[1])
+    if our > opp:
+        return "Счёт: <b>" + shown + "</b> в нашу пользу! 🎉"
+    if our < opp:
+        return "Счёт: <b>" + shown + "</b>. Не сдаёмся! 💪"
+    return "На табло ничья!"
+
 def render_post(ev):
     m = ev["minute"]
     p = ev["player"]
     a = ev.get("assist")
     sc = ev["score"]
     ours = ev["ours"]
-    who = ev["side"]
 
-    # Гол нашей команды
     if ev["type"] == "goal":
-        pas = "🎯 Голевой пас: " + a + "\n" if a else ""
+        st = score_text_for(sc)
         if ours:
+            pas = "🎯 Голевой пас: " + a + "\n" if a else ""
             return ("🔥⚽️ <b>Г-О-О-О-Л! 🔥⚽️</b>\n\n"
                     "⚽ <b>АВТОР ГОЛА: " + p + "</b> 🌟\n"
                     + pas
                     + "⏱ На " + str(m) + "' минуте!\n\n"
-                    "Счёт: <b>" + str(sc[0]) + " : " + str(sc[1])
-                    + "</b> в нашу пользу! 🎉")
-        # Гол соперника — без имени игрока
+                    + st)
         return ("😢 <b>Пропускаем...</b> 😢\n\n"
                 "На " + str(m) + "' минуте соперник забивает.\n\n"
-                "Счёт: <b>" + str(sc[0]) + " : " + str(sc[1])
-                + "</b>. Не сдаёмся! 💪")
+                + st)
 
-    # Жёлтая карточка
     if ev["type"] == "yellow":
         if ours:
             return ("🟡 <b>ЖЁЛТАЯ КАРТОЧКА у нас</b>\n\n"
-                    "🟡 " + p + " (" + who + ")\n"
-                    "⏱ На " + str(m) + "' минуте.\n"
-                    "Аккуратнее дальше! 👀")
+                    "🟡 " + p + "\n"
+                    "⏱ На " + str(m) + "' минуте.")
         return ("🟡 <b>Жёлтая карточка у соперника</b>\n\n"
-                "🟡 Игрок соперника (" + who + ")\n"
-                "⏱ На " + str(m) + "' минуте.\n"
-                "Пользуемся моментом! 💪")
+                "🟡 " + p + "\n"
+                "⏱ На " + str(m) + "' минуте.")
 
-    # Красная карточка
     if ev["type"] == "red":
         if ours:
             return ("🚨 <b>КРАСНАЯ КАРТОЧКА — УДАЛЕНИЕ У НАС</b>\n\n"
-                    "🔴 " + p + " (" + who + ")\n"
-                    "⏱ На " + str(m) + "' минуте.\n"
-                    "Играем в меньшинстве! 😨")
+                    "🔴 " + p + "\n"
+                    "⏱ На " + str(m) + "' минуте.")
         return ("🚨 <b>КРАСНАЯ КАРТОЧКА У СОПЕРНИКА!</b>\n\n"
-                "🔴 Игрок соперника (" + who + ")\n"
-                "⏱ На " + str(m) + "' минуте.\n"
-                "Играем против десятерых — давим! 💪")
+                "🔴 " + p + "\n"
+                "⏱ На " + str(m) + "' минуте.")
     return None
 
 def load_state():
@@ -253,6 +264,7 @@ def save_state(s):
         json.dump(s, f)
 
 def find_match_url(cal_md):
+    """Ищем в календаре наш матч: приоритет — будущая игра (- : -)."""
     upcoming = ""
     any_match = ""
     for raw in cal_md.splitlines():
@@ -269,7 +281,7 @@ def find_match_url(cal_md):
     return upcoming or any_match
 
 def main():
-    global STATE_FILE
+    global STATE_FILE, OUR_IS_HOME
     now = datetime.now(MSK)
 
     if PAST_MATCH:
@@ -287,7 +299,7 @@ def main():
 
     md = jina(match_url)
     if not md:
-        print("Страница матча не скачалась")
+        send("🧪 Диагностика: страница матча не скачалась (md пустой)")
         return
     time.sleep(5)
     html = jina(match_url, html=True)
@@ -297,6 +309,9 @@ def main():
         print("Это не наш матч:", team1, team2)
         return
 
+    # Ключевое: определяем, хозяева мы или гости
+    OUR_IS_HOME = OUR_KEY in team1.upper()
+
     st = load_state()
     if PAST_MATCH:
         st = {"seen": [], "started": False, "final": False, "score": [0, 0]}
@@ -305,7 +320,6 @@ def main():
     md_events = parse_md_events(md)
     events = merge_events(md_events, html_events)
 
-    # Пост о начале матча
     if events and not st.get("started"):
         st["started"] = True
         save_state(st)
@@ -330,24 +344,28 @@ def main():
     st["score"] = last_score
     save_state(st)
 
-    # Финальный пост с вердиктом
+    # Финальный пост: сравниваем НАШИ голы с голами соперника
     end_time = now.replace(hour=START_H, minute=START_M, second=0,
                            microsecond=0) + timedelta(minutes=DURATION_MIN)
     if now > end_time and st.get("started") and not st.get("final"):
         st["final"] = True
         save_state(st)
-        h, a = st["score"]
+        sc = st["score"]
+        if OUR_IS_HOME:
+            our, opp = sc[0], sc[1]
+        else:
+            our, opp = sc[1], sc[0]
 
-        verdict = ""
-        if h > a:
+        if our > opp:
             verdict = "🎉 <b>ПОБЕДА!</b> 🎉"
-        elif h < a:
+        elif our < opp:
             verdict = "😔 <b>ПОРАЖЕНИЕ</b> 😔"
         else:
             verdict = "🤝 <b>НИЧЬЯ</b> 🤝"
 
         send("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n"
-             "📊 Итоговый счёт: <b>" + str(h) + " : " + str(a) + "</b>\n\n"
+             "📊 Итоговый счёт: <b>" + str(sc[0]) + " : " + str(sc[1])
+             + "</b>\n\n"
              + verdict + "\n\n"
              "Спасибо за игру, команда! 🤝")
 
@@ -355,5 +373,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception:
-        print(traceback.format_exc())
+        send("🚨 Ошибка теста:\n<pre>"
+             + esc(traceback.format_exc()[-2500:]) + "</pre>")
         raise
