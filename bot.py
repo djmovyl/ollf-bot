@@ -12,12 +12,13 @@ CHANNEL = os.environ["CHANNEL"]
 CALENDAR_URL = "https://ollf.ru/tournament/1067343/calendar"
 OUR_KEY = "ITPROVIDER"
 
-# ====== РЕЖИМ ПРОДАКШЕН: матч из календаря ======
+# ====== РЕЖИМ ТЕСТА НА ПРОШЕДШЕМ МАТЧЕ ======
 PAST_MATCH = False
-MATCH_URL = ""  # не используется при PAST_MATCH=False
+MATCH_URL = "https://ollf.ru/match/5905503"
 
-MATCH_DAY = (22, 11)
-START_H, START_M = 15, 20
+# Время и дата матча теперь берутся из календаря автоматически.
+# Эти значения — только запасной вариант, если время в календаре не нашлось.
+START_H, START_M = 18, 0
 DURATION_MIN = 75
 
 TIME_PAT = re.compile(r"(\d{1,3})'\s*(\d{2})''")
@@ -261,10 +262,37 @@ def save_state(s):
     with open(STATE_FILE, "w") as f:
         json.dump(s, f)
 
-def find_match_url(cal_md):
-    """Ищем в календаре наш матч: приоритет — будущая игра (- : -)."""
-    upcoming = ""
-    any_match = ""
+def parse_date_from_line(s):
+    """Дата из строки календаря: '22.11.2026' или '22.11'.
+    Возвращает (year, month, day); год может быть None."""
+    m = re.search(r"\b(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?\b", s)
+    if not m:
+        return None, None, None
+    d = int(m.group(1))
+    mo = int(m.group(2))
+    y = int(m.group(3)) if m.group(3) else None
+    if mo < 1 or mo > 12 or d < 1 or d > 31:
+        return None, None, None
+    return y, mo, d
+
+def parse_time_from_line(s):
+    """Время из строки календаря: '15:20', '9:30'. Возвращает (h, mm) или (None, None)."""
+    m = re.search(r"\b(\d{1,2}):(\d{2})\b", s)
+    if not m:
+        return None, None
+    h = int(m.group(1))
+    mm = int(m.group(2))
+    if 0 <= h <= 23 and 0 <= mm <= 59:
+        return h, mm
+    return None, None
+
+def find_our_match(cal_md, today):
+    """Ищем наш матч в календаре.
+    Возвращает (url, date, time):
+      date — (year, month, day) или None,
+      time — (hour, minute) или None.
+    Приоритет: матч с '- : -' (ещё не сыгран/идёт), затем остальные наши."""
+    candidates = []
     for raw in cal_md.splitlines():
         s = raw.strip()
         if OUR_KEY not in s or "ollf.ru/match/" not in s:
@@ -273,27 +301,62 @@ def find_match_url(cal_md):
         if not m:
             continue
         url = "https://ollf.ru/match/" + m.group(1)
-        any_match = url
-        if "- : -" in s:
-            upcoming = url
-    return upcoming or any_match
+        y, mo, d = parse_date_from_line(s)
+        h, mm = parse_time_from_line(s)
+        if y is None and mo is not None:
+            y = today.year  # год в календаре не указан — берём текущий
+        candidates.append({
+            "url": url,
+            "date": (y, mo, d) if (y and mo and d) else None,
+            "time": (h, mm) if h is not None else None,
+            "upcoming": "- : -" in s,
+        })
+    if not candidates:
+        return "", None, None
+    # Сначала матчи, у которых дата совпадает с сегодняшней
+    today_key = (today.year, today.month, today.day)
+    pool = [c for c in candidates if c["date"] == today_key]
+    if not pool:
+        # Если даты не разобрались ни у кого — берём как есть
+        pool = [c for c in candidates if c["date"] is None]
+    if not pool:
+        return "", None, None
+    upcoming = [c for c in pool if c["upcoming"]]
+    pick = (upcoming or pool)[0]
+    return pick["url"], pick["date"], pick["time"]
 
 def main():
-    global STATE_FILE, OUR_IS_HOME
+    global STATE_FILE, OUR_IS_HOME, START_H, START_M
     now = datetime.now(MSK)
 
     if PAST_MATCH:
         match_url = MATCH_URL
+        START_H, START_M = 15, 20
         STATE_FILE = "test_state.json"
     else:
-        if (now.month, now.day) != MATCH_DAY:
-            print("Сегодня не день матча — выходим")
-            return
         cal = jina(CALENDAR_URL)
-        match_url = find_match_url(cal) if cal else ""
-        if not match_url:
-            print("Матч не найден в календаре")
+        if not cal:
+            send("🧪 Диагностика: календарь не скачался")
             return
+
+        match_url, mdate, mtime = find_our_match(cal, now.date())
+        if not match_url:
+            print("Наш матч на сегодня не найден — выходим")
+            return
+
+        # Проверяем дату: работаем только в день матча
+        today_key = (now.year, now.month, now.day)
+        if mdate and mdate != today_key:
+            print("Наш матч не сегодня:", mdate, "— выходим")
+            return
+
+        if mtime:
+            START_H, START_M = mtime
+        else:
+            START_H, START_M = 18, 0
+            print("Время матча не найдено, ставим по умолчанию 18:00")
+
+        STATE_FILE = "prod_state.json"
 
     md = jina(match_url)
     if not md:
