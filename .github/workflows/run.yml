@@ -3,6 +3,9 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+concurrency:
+  group: ollf-bot
+  cancel-in-progress: true
 permissions:
   contents: write
 jobs:
@@ -16,9 +19,8 @@ jobs:
       - run: pip install requests
       - run: python bot.py
         env:
-          BOT_TOKEN: \${{ secrets.BOT_TOKEN }}
-          CHANNEL: \${{ secrets.CHANNEL }}
-          MATCH_URL: \${{ secrets.MATCH_URL }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHANNEL: ${{ secrets.CHANNEL }}
       - name: Сохранить состояние
         run: |
           git config user.name "ollf-bot"
