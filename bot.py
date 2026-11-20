@@ -176,12 +176,16 @@ def build_announcement(opponent, mdate, time_str):
 
 # ================= СОСТАВЫ =================
 NAME_TOKEN = r"[А-ЯЁ][а-яё\-]+"
+# Номер перед именем: '1 Семёнов Александр'.
+# Группы: 1 — номер, 2 — имя, 3 — фамилия
 PAT_NUM_FIRST = re.compile(
     r"(?<![\w.])(\d{1,2})[.\)]?\s+(?:$К$|ВР)?\s*"
-    + NAME_TOKEN + r"\s+" + NAME_TOKEN, re.IGNORECASE)
+    r"(" + NAME_TOKEN + r")\s+(" + NAME_TOKEN + r")", re.IGNORECASE)
+# Номер после имени: 'Коротков Арсений 1'.
+# Группы: 1 — имя, 2 — фамилия, 3 — номер
 PAT_NUM_LAST = re.compile(
-    NAME_TOKEN + r"\s+" + NAME_TOKEN + r"[.,]?\s*(?:$К$|ВР)?\s*(\d{1,2})(?!\d)",
-    re.IGNORECASE)
+    r"(" + NAME_TOKEN + r")\s+(" + NAME_TOKEN + r")"
+    r"[.,]?\s*(?:$К$|ВР)?\s*(\d{1,2})(?!\d)", re.IGNORECASE)
 
 def _mark_around(line, start, span):
     window = line[max(0, start - 12): start + span + 12].upper()
@@ -192,11 +196,12 @@ def _mark_around(line, start, span):
     return ""
 
 def lineup_side_is_right(md, team1, team2):
-    head_idx = md.upper().find("СТАРТОВЫЕ СОСТАВЫ")
+    up = md.upper()
+    head_idx = up.find("СТАРТОВЫЕ СОСТАВЫ")
     if head_idx < 0:
-        head_idx = md.upper().find("СОСТАВ")
+        head_idx = up.find("СОСТАВ")
     if head_idx >= 0:
-        head = md[head_idx: head_idx + 600].upper()
+        head = up[head_idx: head_idx + 600]
         p_ours = head.find(OUR_KEY.upper())
         other = team2 if OUR_KEY.upper() in team1.upper() else team1
         p_other = head.find(other.upper())
@@ -257,8 +262,7 @@ def dump_lineup_diagnostics(md):
         s = line.strip()
         if not s or shown >= 30:
             break
-        if (re.search(r"\d{1,2}[\s.]{1,3}[А-Яа-яЁё]", s)
-                or "player" in s.lower()):
+        if re.search(r"\d{1,2}[\s.]{1,3}[А-Яа-яЁё]", s) or "/player/" in s:
             print("Строка состава? ", s[:120])
             shown += 1
 
@@ -309,16 +313,15 @@ def find_stream_url(html, md):
     return None
 
 def dump_stream_diagnostics(html, md):
-    """Диагностика: содержимое вкладки трансляции и ключевые фрагменты HTML."""
     for text, label in ((md, "MD"), (html, "HTML")):
         if not text:
             continue
         for kw in ("iframe", "player", "video", "VK Video", "vkvideo"):
-            for m in re.finditer(re.escape(kw), text, re.IGNORECASE):
+            m = re.search(re.escape(kw), text, re.IGNORECASE)
+            if m:
                 frag = text[max(0, m.start() - 120):m.end() + 200]
                 frag = frag.replace("\n", " ")
                 print("[" + label + " «" + kw + "»]:", frag[:280])
-                break  # по одному фрагменту на ключевое слово
     if md and len(md) < 6000:
         print("---- MD ВКЛАДКИ ТРАНСЛЯЦИИ ЦЕЛИКОМ ----")
         print(md)
