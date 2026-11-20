@@ -1,11 +1,15 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "replay-2.14 (21.11.2026)"
+VERSION = "replay-2.15 (21.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 # Канал реплея: REPLAY_CHANNEL, если задан, иначе общий CHANNEL
 CHANNEL = os.environ.get("REPLAY_CHANNEL") or os.environ.get("CHANNEL", "")
+# Адрес Telegram API: через Cloudflare Worker, если задан TG_API_URL
+TG_API = os.environ.get("TG_API_URL", "https://api.telegram.org")
+# Секрет прокси из воркера (заголовок x-proxy-secret)
+TG_PROXY_SECRET = os.environ.get("TG_PROXY_SECRET", "")
 MATCH_URL = "https://ollf.ru/match/5905503"
 OUR_KEY = "ITPROVIDER"
 VK_TRANSLATION = "https://vkvideo.ru/@club154907309/all"
@@ -73,8 +77,9 @@ def tg(method, **p):
     for attempt in range(4):
         try:
             r = requests.post(
-                "https://api.telegram.org/bot" + TOKEN + "/" + method,
-                data=p, timeout=30)
+                TG_API.rstrip("/") + "/bot" + TOKEN + "/" + method,
+                data=p, timeout=30,
+                headers={"x-proxy-secret": TG_PROXY_SECRET})
             return r.json()
         except Exception as e:
             last = e
@@ -505,6 +510,7 @@ def hour_reminder(opponent, time_str, loc):
 def main():
     global OUR_IS_HOME, LOCATION
     print("ВЕРСИЯ КОДА:", VERSION)
+    print("Telegram API через:", TG_API.rstrip("/"))
     if os.environ.get("REPLAY_RESET") in ("yes", "true", "1"):
         try:
             os.remove(STATE_FILE)
