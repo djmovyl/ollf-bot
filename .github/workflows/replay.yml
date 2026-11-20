@@ -1,18 +1,51 @@
-name: Replay test
+name: FC ITPROVIDER Replay (test posts)
 
 on:
   workflow_dispatch:
+    inputs:
+      reset:
+        description: "Сбросить состояние (постить всё заново)?"
+        type: choice
+        options:
+          - no
+          - yes
+        default: no
 
 jobs:
   replay:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install requests beautifulsoup4
-      - run: python replay.py
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Restore replay state
+        uses: actions/cache/restore@v4
+        with:
+          path: test_state.json
+          key: replay-state-${{ github.run_id }}
+          restore-keys: |
+            replay-state-
+
+      - name: Run replay
+        run: python replay.py
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL: ${{ secrets.CHANNEL }}
+          REPLAY_CHANNEL: ${{ secrets.REPLAY_CHANNEL }}
+          REPLAY_RESET: ${{ inputs.reset }}
+
+      - name: Save replay state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: test_state.json
+          key: replay-state-${{ github.run_id }}
