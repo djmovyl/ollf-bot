@@ -26,7 +26,7 @@ LINEUP_CHECK_BEFORE = 5
 VK_TRANSLATION = "https://vkvideo.ru/@club154907309/all"
 
 TIME_PAT = re.compile(r"(\d{1,3})'\s*(\d{2})''")
-SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*$")
+SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*\$")
 
 MSK = timezone(timedelta(hours=3))
 
@@ -77,7 +77,7 @@ def jina(url, html=False):
     return ""
 
 def find_brackets(s):
-    res = []
+    res = 
     i = 0
     while True:
         a = s.find("[", i)
@@ -102,7 +102,7 @@ def event_minute(time_str):
 def parse_teams(md):
     idx = md.find("События матча")
     zone = md[:idx] if idx > 0 else md
-    names = []
+    names = 
     for line in zone.splitlines():
         if "teams/application?team_id=" not in line:
             continue
@@ -113,7 +113,7 @@ def parse_teams(md):
             if c not in names:
                 names.append(c)
     if len(names) >= 2:
-        return names[0], names[1]
+        return names, names
     return "Хозяева", "Гости"
 
 def parse_location(md):
@@ -127,7 +127,7 @@ def parse_location(md):
 
 def parse_match_datetime_from_page(md, now):
     today_ord = now.date().toordinal()
-    found = []
+    found = 
     for m in re.finditer(
             r"(\d{1,2})\s+(" + "|".join(MONTHS_RU) + r")", md, re.IGNORECASE):
         day = int(m.group(1))
@@ -146,11 +146,11 @@ def parse_match_datetime_from_page(md, now):
     found.sort()
     for _, _, _, d_, frag in found[:5]:
         print("Кандидат даты:", d_, "| фрагмент:", frag[:90])
-    _, _, e, d, _ = found[0]
-    tm = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", md[e:e + 200])
+    _, _, e, d, _ = found
+    tm = re.search(r"\b(?\d|2[0-3]):([0-5]\d)\b", md[e:e + 200])
     if tm:
         return d, (int(tm.group(1)), int(tm.group(2)))
-    tm = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", md[max(0, e - 150):e])
+    tm = re.search(r"\b(?\d|2[0-3]):([0-5]\d)\b", md[max(0, e - 150):e])
     if tm:
         return d, (int(tm.group(1)), int(tm.group(2)))
     return d, None
@@ -224,7 +224,7 @@ $[^)]*$\s*"
         r"(" + NAME_TOKEN + r")\s+(" + NAME_TOKEN + r")\s*($К$|ВР)?\]"
         r"
 $$
-\s*https://ollf\.ru/player/", re.IGNORECASE)    # Игрок без фото:  * 9 [Семёнов Николай](ссылка)    PAT_P2 = re.compile(        r"\*\s+(\d{1,2})\s+"        r"(" + NAME_TOKEN + r")\s+(" + NAME_TOKEN + r")\s*(К|ВР)?"        r"\s*https://ollf\.ru/player/", re.IGNORECASE)    # Заголовок команды в разделе составов    PAT_TEAM = re.compile(        r"([^!]+?)https://ollf\.ru/tournament/\d+/teams"        r"/application\?team_id=\d+", re.IGNORECASE)    sections = []  # [(имя команды, [(номер, имя, пометка), ...])]    current = None    for line in zone.splitlines():        tm = PAT_TEAM.search(line)        if tm:            current = tm.group(1).strip()            sections.append((current, []))            continue        pm = PAT_P1.search(line) or PAT_P2.search(line)        if pm and current is not None:            num = int(pm.group(1))            name = (pm.group(2) + " " + pm.group(3)).strip()            if _is_junk_name(name):                continue            mark = pm.group(4) or ""            if all(p[0] != num or p[1] != name for p in sections[-1][1]):                sections[-1][1].append((num, name, mark))    left = sections[0][1] if len(sections) > 0 else []    right = sections[1][1] if len(sections) > 1 else []    print("Команды в разделе:", [s[0] for s in sections])    print("Состав LEFT :", left)    print("Состав RIGHT:", right)    # Наша секция: та, где больше всего наших игроков    candidates = [plist for tname, plist in sections                  if OUR_KEY.upper() in tname.upper()]    if candidates:        ours = max(candidates, key=len)    else:        ours = right if ours_is_right else left    if len(ours) >= 5:        return ours    # Не набралось — печатаем сырые строки раздела для подстройки    print("---- СЫРЫЕ СТРОКИ РАЗДЕЛА СОСТАВОВ (до 60) ----")    shown = 0    for line in zone.splitlines():        s = line.strip()        if not s:            continue        print("|", s[:160])        shown += 1        if shown >= 60:            break    print("---- КОНЕЦ СЫРЫХ СТРОК ----")    return Nonedef dump_lineup_diagnostics(md):    up = md.upper()    idx = up.find("СТАРТОВЫЕ СОСТАВЫ")    if idx < 0:        idx = up.find("СОСТАВ")    zone = md[idx: idx + 4000] if idx >= 0 else md    shown = 0    for line in zone.splitlines():        s = line.strip()        if not s or shown >= 30:            break        if re.search(r"\d{1,2}[\s.]{1,3}[А-Яа-яЁё]", s) or "/player/" in s:            print("Строка состава? ", s[:120])            shown += 1def get_lineup_from_sources(match_url, md, ours_is_right):    """Пробуем состав на основной странице и во вкладках протокола/событий."""    sources = [("основная", md)]    for param in ("protocol", "events"):        tmd = jina(match_url + "?active=" + param)        if tmd:            sources.append(("?active=" + param, tmd))    for label, text in sources:        print("Пробуем состав из:", label)        players = parse_lineups(text, ours_is_right)        if players:            return players, label    return None, Nonedef send_lineup(players):    lines = []    for num, name, mark in players:        s = "№" + str(num) + " " + name        if mark == "ВР":            s += " 🧤"        elif mark == "(К)":            s += " 🅺"        lines.append(esc(s))    send("📋 <b>Наш состав на сегодняшнюю игру</b>\n\n"         + "\n".join(lines) + "\n\nВ бой, ITPROVIDER! 💪")# ================= ТРАНСЛЯЦИЯ =================def find_stream_url(html, md):    for text in (html, md):        if not text:            continue        # 1) VK-плеер во врезке: video_ext.php?oid=..&id=..        for m in re.finditer(                r"https?://[^\s\"'<>()\*video_ext\.php[^\s\"'<>()\*",                text):            u = m.group(0).replace("&amp;", "&")            om = re.search(r"oid=(-?\d+)", u)            im = re.search(r"\bid=(\d+)", u)            if om and im:                return "https://vkvideo.ru/video" + om.group(1) + "_" + im.group(1)        # 2) прямые ссылки на видео или эфир VK        for m in re.finditer(                r"https?://[^\s\"'<>()\
+\s*https://ollf\.ru/player/", re.IGNORECASE)    # Игрок без фото:  * 9 [Семёнов Николай](ссылка)    PAT_P2 = re.compile(        r"\*\s+(\d{1,2})\s+"        r"(" + NAME_TOKEN + r")\s+(" + NAME_TOKEN + r")\s*(К|ВР)?"        r"\s*https://ollf\.ru/player/", re.IGNORECASE)    # Заголовок команды в разделе составов    PAT_TEAM = re.compile(        r"([^!]+?)https://ollf\.ru/tournament/\d+/teams"        r"/application\?team_id=\d+", re.IGNORECASE)    sections =   # [(имя команды, [(номер, имя, пометка), ...])]    current = None    for line in zone.splitlines():        tm = PAT_TEAM.search(line)        if tm:            current = tm.group(1).strip()            sections.append((current, ))            continue        pm = PAT_P1.search(line) or PAT_P2.search(line)        if pm and current is not None:            num = int(pm.group(1))            name = (pm.group(2) + " " + pm.group(3)).strip()            if _is_junk_name(name):                continue            mark = pm.group(4) or ""            if all(p != num or p != name for p in sections[-1]):                sections[-1].append((num, name, mark))    left = sections if len(sections) > 0 else     right = sections if len(sections) > 1 else     print("Команды в разделе:", [s for s in sections])    print("Состав LEFT :", left)    print("Состав RIGHT:", right)    # Наша секция: та, где больше всего наших игроков    candidates = [plist for tname, plist in sections                  if OUR_KEY.upper() in tname.upper()]    if candidates:        ours = max(candidates, key=len)    else:        ours = right if ours_is_right else left    if len(ours) >= 5:        return ours    # Не набралось — печатаем сырые строки раздела для подстройки    print("---- СЫРЫЕ СТРОКИ РАЗДЕЛА СОСТАВОВ (до 60) ----")    shown = 0    for line in zone.splitlines():        s = line.strip()        if not s:            continue        print("|", s[:160])        shown += 1        if shown >= 60:            break    print("---- КОНЕЦ СЫРЫХ СТРОК ----")    return Nonedef dump_lineup_diagnostics(md):    up = md.upper()    idx = up.find("СТАРТОВЫЕ СОСТАВЫ")    if idx < 0:        idx = up.find("СОСТАВ")    zone = md[idx: idx + 4000] if idx >= 0 else md    shown = 0    for line in zone.splitlines():        s = line.strip()        if not s or shown >= 30:            break        if re.search(r"\d{1,2}[\s.]{1,3}[А-Яа-яЁё]", s) or "/player/" in s:            print("Строка состава? ", s[:120])            shown += 1def get_lineup_from_sources(match_url, md, ours_is_right):    """Пробуем состав на основной странице и во вкладках протокола/событий."""    sources = [("основная", md)]    for param in ("protocol", "events"):        tmd = jina(match_url + "?active=" + param)        if tmd:            sources.append(("?active=" + param, tmd))    for label, text in sources:        print("Пробуем состав из:", label)        players = parse_lineups(text, ours_is_right)        if players:            return players, label    return None, Nonedef send_lineup(players):    lines =     for num, name, mark in players:        s = "№" + str(num) + " " + name        if mark == "ВР":            s += " 🧤"        elif mark == "(К)":            s += " 🅺"        lines.append(esc(s))    send("📋 <b>Наш состав на сегодняшнюю игру</b>\n\n"         + "\n".join(lines) + "\n\nВ бой, ITPROVIDER! 💪")# ================= ТРАНСЛЯЦИЯ =================def find_stream_url(html, md):    for text in (html, md):        if not text:            continue        # 1) VK-плеер во врезке: video_ext.php?oid=..&id=..        for m in re.finditer(                r"https?://[^\s\"'<>()\*video_ext\.php[^\s\"'<>()\*",                text):            u = m.group(0).replace("&amp;", "&")            om = re.search(r"oid=(-?\d+)", u)            im = re.search(r"\bid=(\d+)", u)            if om and im:                return "https://vkvideo.ru/video" + om.group(1) + "_" + im.group(1)        # 2) прямые ссылки на видео или эфир VK        for m in re.finditer(                r"https?://[^\s\"'<>()\
 $$
 *(?:vkvideo\.ru|vk\.com|vk\.ru)"
                 r"/(?:video|live)-?\d+_\d+[^\s\"'<>()\\]*", text):
@@ -263,9 +263,9 @@ def get_stream(match_url, html, md):
 # ================= СОБЫТИЯ МАТЧА =================
 def parse_html_events(html, team1, team2):
     soup = BeautifulSoup(html, "html.parser")
-    events = []
+    events = 
     for el in soup.select(".game-timeline__event"):
-        cls = el.get("class", [])
+        cls = el.get("class", )
         if "yellow-card" in cls:
             etype = "yellow"
         elif "red-card" in cls:
@@ -293,7 +293,7 @@ def parse_html_events(html, team1, team2):
     return events
 
 def parse_md_events(md):
-    events = []
+    events = 
     score = [0, 0]
     for raw in md.splitlines():
         s = raw.strip()
@@ -309,9 +309,9 @@ def parse_md_events(md):
         if ms:
             new_h = int(ms.group(1))
             new_a = int(ms.group(2))
-            if new_h > score[0]:
+            if new_h > score:
                 scoring = "home"
-            elif new_a > score[1]:
+            elif new_a > score:
                 scoring = "away"
             score = [new_h, new_a]
         events.append({"minute": minute, "players": players,
@@ -319,10 +319,10 @@ def parse_md_events(md):
     return events
 
 def merge_events(md_events, html_events):
-    merged = []
+    merged = 
     pool = list(html_events)
     for e in md_events:
-        p0 = e["players"][0] if e["players"] else ""
+        p0 = e["players"] if e["players"] else ""
         match = None
         for he in pool:
             if he["minute"] == e["minute"] and he["player"] == p0:
@@ -340,7 +340,7 @@ def merge_events(md_events, html_events):
             assist = match["assist"]
             player = match["player"]
         else:
-            assist = e["players"][1] if len(e["players"]) > 1 else None
+            assist = e["players"] if len(e["players"]) > 1 else None
             player = p0 or "?"
             if e["scoring"]:
                 etype = "goal"
@@ -361,10 +361,10 @@ def merge_events(md_events, html_events):
 
 def score_text_for(sc):
     if OUR_IS_HOME:
-        our, opp = sc[0], sc[1]
+        our, opp = sc, sc
     else:
-        our, opp = sc[1], sc[0]
-    shown = str(sc[0]) + " : " + str(sc[1])
+        our, opp = sc, sc
+    shown = str(sc) + " : " + str(sc)
     if our > opp:
         return "Счёт: <b>" + shown + "</b> в нашу пользу! 🎉"
     if our < opp:
@@ -443,7 +443,7 @@ def parse_time_from_line(s):
     return None, None
 
 def find_our_match(cal_md, today):
-    candidates = []
+    candidates = 
     for raw in cal_md.splitlines():
         s = raw.strip()
         if OUR_KEY not in s or "ollf.ru/match/" not in s:
@@ -472,7 +472,7 @@ def find_our_match(cal_md, today):
     if not pool:
         return "", None, None
     upcoming = [c for c in pool if c["upcoming"]]
-    pick = (upcoming or pool)[0]
+    pick = (upcoming or pool)
     print("Строка календаря:", pick["line"][:200])
     return pick["url"], pick["date"], pick["time"]
 
@@ -561,7 +561,7 @@ def main():
 
     st = load_state()
 
-    st.setdefault("seen", [])
+    st.setdefault("seen", )
     st.setdefault("started", False)
     st.setdefault("final", False)
     st.setdefault("score", [0, 0])
@@ -569,7 +569,7 @@ def main():
     today_key = now.strftime("%Y-%m-%d")
 
     if st.get("match_date") != today_key:
-        st["seen"] = []
+        st["seen"] = 
         st["started"] = False
         st["final"] = False
         st["score"] = [0, 0]
@@ -618,7 +618,7 @@ def main():
             st["stream"] = today_key
             save_state(st)
 
-    html_events = parse_html_events(html, team1, team2) if html else []
+    html_events = parse_html_events(html, team1, team2) if html else 
     md_events = parse_md_events(md)
     events = merge_events(md_events, html_events)
 
@@ -651,9 +651,9 @@ def main():
         save_state(st)
         sc = st["score"]
         if OUR_IS_HOME:
-            our, opp = sc[0], sc[1]
+            our, opp = sc, sc
         else:
-            our, opp = sc[1], sc[0]
+            our, opp = sc, sc
 
         if our > opp:
             verdict = "🎉 <b>ПОБЕДА!</b> 🎉"
@@ -663,7 +663,7 @@ def main():
             verdict = "🤝 <b>НИЧЬЯ</b> 🤝"
 
         send("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n"
-             "📊 Итоговый счёт: <b>" + str(sc[0]) + " : " + str(sc[1])
+             "📊 Итоговый счёт: <b>" + str(sc) + " : " + str(sc)
              + "</b>\n\n"
              + verdict + "\n\n"
              "Спасибо за игру, команда! 🤝")
