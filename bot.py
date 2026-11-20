@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.14 (21.11.2026)"
+VERSION = "bot-2.15 (21.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -10,6 +10,7 @@ TG_API = os.environ.get("TG_API_URL", "https://api.telegram.org")
 # Секрет прокси из воркера (заголовок x-proxy-secret)
 TG_PROXY_SECRET = os.environ.get("TG_PROXY_SECRET", "")
 CALENDAR_URL = "https://ollf.ru/tournament/1067343/calendar"
+TABLES_URL = "https://ollf.ru/tournament/1067343/tables"
 OUR_KEY = "ITPROVIDER"
 # PAST_MATCH = True  -> тестовый режим: разбор MATCH_URL, только лог
 # PAST_MATCH = False -> боевой режим: календарь + реальный канал
@@ -36,6 +37,9 @@ NAME_RE = re.compile(NAME + r"\s+" + NAME)
 
 IMG_MD = re.compile(
     "!" + LB + "[^" + RB + "]*" + RB + LP + "[^" + RP + "]*" + RP)
+# Маркдаун-ссылка: [текст](адрес) -> текст
+PAT_LINK = re.compile(
+    LB + "([^" + RB + "]*)" + RP + LP + "[^" + RP + "]*" + RP)
 PAT_P = re.compile(
     r"\*\s+(\d{1,2})\s+" + LB + r"\s*"
     + "(" + NAME + r")\s+(" + NAME + r")\s*"
@@ -169,6 +173,95 @@ def find_brackets(s):
 
 def strip_tags(html):
     return re.sub("<[^>]*>", " ", html)
+
+
+def flatten_table_md(s):
+    """Чистим маркдаун таблицы: убираем картинки и ссылки,
+    схлопываем переводы строк в пробелы."""
+    s = IMG_MD.sub(" ", s)
+    s = PAT_LINK.sub(lambda m: m.group(1), s)
+    return re.sub(r"\s+", " ", s)
+
+
+def team_row(clean, name):
+    """Строка таблицы: 'место Имя И В Н П МЗ - МП О'.
+    Перебираем все вхождения имени — берём то, где цифры сошлись."""
+    tries = [name]
+    if " Казань" in name:
+        tries.append(name.replace(" Казань", ""))
+    last_seen = None
+    for cand in tries:
+        for m in re.finditer(re.escape(cand), clean):
+            last_seen = m.start()
+            before = clean[max(0, m.start() - 8): m.start()]
+            pm = re.search(r"(\d{1,2})\s*$", before)
+            place = int(pm.group(1)) if pm else None
+            after = clean[m.end(): m.end() + 150]
+            fm = re.match(
+                r"\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})"
+                r"\s+(\d{1,3})\s*-\s*(\d{1,3})\s+(\d{1,3})", after)
+            if fm:
+                return {"place": place,
+                        "games": int(fm.group(1)),
+                        "pts": int(fm.group(7)),
+                        "gf": int(fm.group(5)),
+                        "ga": int(fm.group(6))}
+    if last_seen is not None:
+        print("СТРОКА НЕ РАСПОЗНАНА (для отладки), окно вокруг имени:",
+              clean[max(0, last_seen - 60): last_seen + 150])
+    return None
+
+
+def parse_standings(tmd, t1, t2):
+    clean = flatten_table_md(tmd)
+    res = {}
+    for team in (t1, t2):
+        row = team_row(clean, team)
+        if row:
+            res[team] = row
+            print("Таблица:", team, "->", row)
+        else:
+            print("Таблица: строка не найдена для", team)
+    return res
+
+
+def plural(n, one, few, many):
+    n = abs(n) % 100
+    if 11 <= n <= 19:
+        return many
+    n %= 10
+    if n == 1:
+        return one
+    if 2 <= n <= 4:
+        return few
+    return many
+
+
+def standings_block(standings, t1, t2):
+    if not standings:
+        return ""
+    our_team = t1 if OUR_KEY in t1.upper() else t2
+    opp_team = t2 if our_team == t1 else t1
+    our = standings.get(our_team)
+    opp = standings.get(opp_team)
+    if not our or not opp:
+        return ""
+
+    def ln(team, d):
+        s = (esc(team) + " — <b>" + str(d["place"]) + "-е место</b>, "
+             + str(d["pts"]) + " "
+             + plural(d["pts"], "очко", "очка", "очков"))
+        if d.get("gf") is not None:
+            s += (" (" + str(d["games"]) + " "
+                  + plural(d["games"], "игра", "игры", "игр")
+                  + ", голы " + str(d["gf"]) + ":" + str(d["ga"]) + ")")
+        else:
+            s += (" (" + str(d["games"]) + " "
+                  + plural(d["games"], "игра", "игры", "игр") + ")")
+        return "• " + s
+
+    return ("📊 <b>Турнирное положение</b>\n\n🔵 " + ln(our_team, our)
+            + "\n⚪ " + ln(opp_team, opp))
 
 
 def pin_tokens(text):
@@ -618,18 +711,20 @@ def find_our_match(cal_md, today):
     return (pick["url"], pick["date"], pick["time"], pick["venue"])
 
 
-def announcement(opponent, mdate, time_str, loc):
+def announcement(opponent, mdate, time_str, loc, standings_text=""):
     ds = "уточняется"
     if mdate:
         y, mo, d = mdate
         ds = str(d) + " " + MONTHS_RU[mo - 1] + ", "
         ds += WEEKDAYS_RU[datetime(y, mo, d).weekday()]
-    return ("🔥⚽️ <b>FC ITPROVIDER — ДЕНЬ МАТЧА!</b> 🔥⚽️\n\n"
+    body = ("🔥⚽️ <b>FC ITPROVIDER — ДЕНЬ МАТЧА!</b> 🔥⚽️\n\n"
             "🆚 Соперник: «" + esc(opponent) + "»\n"
             "🗓 Дата: " + ds + "\n"
             "⏱ Старт: " + time_str + " (МСК)\n"
-            "🗺 Локация: " + esc(loc) + "\n\n"
-            "Следите за обновлениями в нашей группе!")
+            "🗺 Локация: " + esc(loc))
+    if standings_text:
+        body += "\n\n" + standings_text
+    return body + "\n\nСледите за обновлениями в нашей группе!"
 
 
 def hour_reminder(time_str, loc):
@@ -654,6 +749,9 @@ def test_mode():
     except Exception:
         print("Ошибка разбора шапки (продолжаем):")
         print(traceback.format_exc())
+    tmd = jina(TABLES_URL)
+    if tmd:
+        parse_standings(tmd, t1, t2)
     proto = jina(MATCH_URL + "?active=protocol")
     lineup = our_lineup(md, proto)
     if lineup:
@@ -787,8 +885,17 @@ def main():
             and (now >= now.replace(hour=11, minute=0, second=0,
                                     microsecond=0) or now >= t0)
             and st.get("announced") != tk):
+        standings_text = ""
+        try:
+            tmd = jina(TABLES_URL)
+            if tmd:
+                standings = parse_standings(tmd, t1, t2)
+                standings_text = standings_block(standings, t1, t2)
+        except Exception:
+            print("Ошибка блока таблиц (продолжаем):")
+            print(traceback.format_exc())
         post = announcement(t2 if OUR_IS_HOME else t1,
-                            eff_date, TIME_STR, LOCATION)
+                            eff_date, TIME_STR, LOCATION, standings_text)
         print("---- АНОНС ----")
         print(post.replace("<b>", "").replace("</b>", ""))
         send(post)
@@ -798,7 +905,7 @@ def main():
     # чтобы гарантированно попасть между пятиминутными прогонами
     if time_known and st.get("hour1") != tk:
         dt_min = (t0 - now).total_seconds() / 60
-        if 50 <= dt_min <= 62.5 and LOCATION != "уточняется":
+        if 50 <= dt_min <= 62.5:
             post = hour_reminder(TIME_STR, LOCATION)
             print("---- НАПОМИНАНИЕ ЗА ЧАС ----")
             print(post.replace("<b>", "").replace("</b>", ""))
