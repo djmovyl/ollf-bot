@@ -32,6 +32,10 @@ PAT_TEAM = re.compile(
     LB + r"([^" + LB + RB + "!]+?)" + RB + LP
     + r"https://ollf\.ru/tournament/\d+/teams/application\?team_id=\d+",
     re.I)
+
+CARD_YELLOW = ("жк", "жёлт", "желт", "жолт", "🟨", "yellow card")
+CARD_RED = ("кк", "красн", "🟥", "red card", "удал")
+
 JUNK = ("кубок", "чемпионат", "лига", "турнир", "календарь", "группа",
         "сезон", "тур ", "оллф", "статистика", "таблица", "протокол",
         "события", "автогол")
@@ -216,12 +220,6 @@ def md_events(md):
         players = [c.strip() for c in find_brackets(s)
                    if NAME_RE.fullmatch(c.strip())]
         low = s.lower()
-        if "жёлт" in low or "желт" in low:
-            et = "yellow"
-        elif "красн" in low:
-            et = "red"
-        else:
-            et = "goal"
         scoring = None
         ms = SCORE_END.search(s)
         if ms:
@@ -231,6 +229,15 @@ def md_events(md):
             elif na > score[1]:
                 scoring = "away"
             score = [nh, na]
+        if any(w in low for w in CARD_YELLOW):
+            et = "yellow"
+        elif any(w in low for w in CARD_RED):
+            et = "red"
+        elif scoring:
+            et = "goal"
+        else:
+            et = "unknown"
+            print("НЕОПОЗНАННОЕ СОБЫТИЕ:", s[:220])
         out.append({"et": et, "minute": minute, "players": players,
                     "score": score[:], "scoring": scoring})
     return out
