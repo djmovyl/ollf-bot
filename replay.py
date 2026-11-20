@@ -33,7 +33,8 @@ PAT_TEAM = re.compile(
     + r"https://ollf\.ru/tournament/\d+/teams/application\?team_id=\d+",
     re.I)
 
-CARD_YELLOW = ("жк", "жёлт", "желт", "жолт", "🟨", "yellow card")
+CARD_YELLOW = ("жк", "жёлт", "желт", "жолт", "🟨", "yellow card",
+               "предупреждение")
 CARD_RED = ("кк", "красн", "🟥", "red card", "удал")
 
 JUNK = ("кубок", "чемпионат", "лига", "турнир", "календарь", "группа",
@@ -44,9 +45,7 @@ MONTHS_RU = ("января февраля марта апреля мая июн�
 WEEKDAYS_RU = ("понедельник вторник среда четверг "
                "пятница суббота воскресенье").split()
 MSK = timezone(timedelta(hours=3))
-VK_TRANSLATION = "https://vkvideo.ru/@club154907309/all"
 LOCATION = "уточняется"
-TIME_STR = "15:20"
 OUR_IS_HOME = False
 
 
@@ -97,6 +96,31 @@ def find_brackets(s):
     return res
 
 
+def parse_match_header(md):
+    mdate = None
+    mtime = None
+    loc = "уточняется"
+    m = re.search(r"Матч\s+(\d{1,2})\s+(" + "|".join(MONTHS_RU)
+                  + r")\s+(\d{4})", md, re.I)
+    if m:
+        mo = MONTHS_RU.index(m.group(2).lower()) + 1
+        mdate = (int(m.group(3)), mo, int(m.group(1)))
+        tail = md[m.end(): m.end() + 120]
+        tm = re.search(r"\b(\d{1,2}):(\d{2})\b", tail)
+        if tm:
+            mtime = (int(tm.group(1)), int(tm.group(2)))
+        vm = re.search(r"(Манеж|Стадион|Арена|Спорткомплекс|ФОК)\s+\S+",
+                       tail, re.I)
+        if vm:
+            loc = vm.group(0).strip()
+    if loc == "уточняется":
+        vm = re.search(r"(Манеж|Стадион|Арена|Спорткомплекс|ФОК)\s+\S+",
+                       md, re.I)
+        if vm:
+            loc = vm.group(0).strip()
+    return mdate, mtime, loc
+
+
 def parse_teams(md):
     idx = md.find("События матча")
     zone = md[:idx] if idx > 0 else md
@@ -112,15 +136,6 @@ def parse_teams(md):
     if len(names) >= 2:
         return names[0], names[1]
     return "Хозяева", "Гости"
-
-
-def parse_location(md):
-    m = re.search(r"(Манеж|Стадион|Арена|Спорткомплекс|ФОК)\s+"
-                  r"([A-ZА-ЯЁA-Za-z0-9][\w\-]*"
-                  r"(?:\s+[A-ZА-ЯЁA-Za-z0-9][\w\-]*)?)", md)
-    if m:
-        return (m.group(1) + " " + m.group(2)).strip()
-    return "уточняется"
 
 
 def is_junk(name):
@@ -237,7 +252,7 @@ def md_events(md):
             et = "goal"
         else:
             et = "unknown"
-            print("НЕОПОЗНАННОЕ СОБЫТИЕ:", s[:220])
+            print("НЕОПОЗНАННОЕ СОБЫТИЕ (для отладки):", s[:220])
         out.append({"et": et, "minute": minute, "players": players,
                     "score": score[:], "scoring": scoring})
     return out
@@ -279,8 +294,25 @@ def render_post(ev):
     return None
 
 
+def announcement(opponent, mdate, mtime, loc):
+    ds = "уточняется"
+    if mdate:
+        y, mo, d = mdate
+        ds = str(d) + " " + MONTHS_RU[mo - 1] + ", "
+        ds += WEEKDAYS_RU[datetime(y, mo, d).weekday()]
+    ts = "уточняется"
+    if mtime:
+        ts = format(mtime[0], "02d") + ":" + format(mtime[1], "02d")
+    return ("🔴 <b>FC ITPROVIDER — ДЕНЬ МАТЧА</b> 🔴\n\n"
+            "🆚 Соперник: «" + esc(opponent) + "»\n"
+            "🗓 Дата: " + ds + "\n"
+            "⏱ Старт: " + ts + " (МСК)\n"
+            "🗺 Локация: " + esc(loc) + "\n\n"
+            "Следите за обновлениями в нашей группе.")
+
+
 def main():
-    global OUR_IS_HOME
+    global OUR_IS_HOME, LOCATION
     now = datetime.now(MSK)
     md = jina(MATCH_URL)
     if not md:
@@ -290,26 +322,10 @@ def main():
     OUR_IS_HOME = OUR_KEY in t1.upper()
     print("Команды:", t1, "vs", t2, "| Мы хозяева:", OUR_IS_HOME)
 
-    # --- АНОНС ---
-    mdate = None
-    dm = re.search(r"(\d{1,2})\s+(" + "|".join(MONTHS_RU) + r")", md, re.I)
-    if dm:
-        mdate = (now.year,
-                 MONTHS_RU.index(dm.group(2).lower()) + 1,
-                 int(dm.group(1)))
-    ds = "уточняется"
-    if mdate:
-        y, mo, d = mdate
-        ds = str(d) + " " + MONTHS_RU[mo - 1] + ", "
-        ds += WEEKDAYS_RU[datetime(y, mo, d).weekday()]
-    opponent = t2 if OUR_IS_HOME else t1
-    send("🔴 <b>FC ITPROVIDER — ДЕНЬ МАТЧА</b> 🔴\n\n"
-         "🆚 Соперник: «" + esc(opponent) + "»\n"
-         "🗓 Дата: " + ds + "\n"
-         "⏱ Старт: " + TIME_STR + " (МСК)\n"
-         "🗺 Локация: " + esc(parse_location(md)) + "\n\n"
-         "🔗 Трансляция: " + VK_TRANSLATION + "\n\n"
-         "Следите за обновлениями в этом чате.")
+    # --- АНОНС (без ссылки на трансляцию) ---
+    mdate, mtime, loc = parse_match_header(md)
+    print("Шапка матча: дата", mdate, "| время", mtime, "| локация", loc)
+    send(announcement(t2 if OUR_IS_HOME else t1, mdate, mtime, loc))
 
     # --- СОСТАВ ---
     lineup = get_lineup(MATCH_URL)
@@ -319,7 +335,7 @@ def main():
     else:
         print("ТЕСТ СОСТАВ — не найден")
 
-    # --- ТРАНСЛЯЦИЯ ---
+    # --- ТРАНСЛЯЦИЯ (отдельным постом) ---
     surl = get_stream(MATCH_URL)
     if surl:
         send("📺 <b>А вот и ссылка на игру!</b>\n\n" + surl)
@@ -354,17 +370,18 @@ def main():
             send(post)
 
     # --- ИТОГ ---
-    sc = evs[-1]["score"]
-    our, opp = (sc[0], sc[1]) if OUR_IS_HOME else (sc[1], sc[0])
-    if our > opp:
-        verdict = "🎉 <b>ПОБЕДА!</b> 🎉"
-    elif our < opp:
-        verdict = "😔 <b>ПОРАЖЕНИЕ</b> 😔"
-    else:
-        verdict = "🤝 <b>НИЧЬЯ</b> 🤝"
-    send("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n📊 Итоговый счёт: <b>"
-         + str(sc[0]) + " : " + str(sc[1]) + "</b>\n\n" + verdict
-         + "\n\nСпасибо за игру, команда! 🤝")
+    if evs:
+        sc = evs[-1]["score"]
+        our, opp = (sc[0], sc[1]) if OUR_IS_HOME else (sc[1], sc[0])
+        if our > opp:
+            verdict = "🎉 <b>ПОБЕДА!</b> 🎉"
+        elif our < opp:
+            verdict = "😔 <b>ПОРАЖЕНИЕ</b> 😔"
+        else:
+            verdict = "🤝 <b>НИЧЬЯ</b> 🤝"
+        send("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n📊 Итоговый счёт: <b>"
+             + str(sc[0]) + " : " + str(sc[1]) + "</b>\n\n" + verdict
+             + "\n\nСпасибо за игру, команда! 🤝")
 
 
 if __name__ == "__main__":
