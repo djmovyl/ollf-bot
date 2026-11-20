@@ -1,7 +1,7 @@
 import os, re, time, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "2.2 (20.11.2026)"
+VERSION = "2.2.1 (20.11.2026)"
 
 # ===== НАСТРОЙКИ ТЕСТА =====
 # TEST_SEND = True  -> посты уходят в CHAT_ID (сейчас: тестовая группа)
@@ -12,6 +12,12 @@ MATCH_URL = "https://ollf.ru/match/5905503"   # матч с Триумфом
 OUR_KEY = "ITPROVIDER"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
+
+MONTHS_RU = ("января февраля марта апреля мая июня "
+             "июля августа сентября октября ноября декабря").split()
+WEEKDAYS_RU = ("понедельник вторник среда четверг "
+               "пятница суббота воскресенье").split()
+MSK = timezone(timedelta(hours=3))
 
 BS = chr(92)
 LB = BS + "["
@@ -46,11 +52,6 @@ RANGE_RE = re.compile(
 JUNK = ("кубок", "чемпионат", "лига", "турнир", "календарь", "группа",
         "сезон", "тур ", "оллф", "статистика", "таблица", "протокол",
         "события", "автогол")
-MONTHS_RU = ("января февраля марта апреля мая июня "
-             "июля августа сентября октября ноября декабря").split()
-WEEKDAYS_RU = ("понедельник вторник среда четверг "
-               "пятница суббота воскресенье").split()
-MSK = timezone(timedelta(hours=3))
 
 
 def esc(s):
