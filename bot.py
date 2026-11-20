@@ -1,10 +1,14 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.13 (20.11.2026)"
+VERSION = "bot-2.14 (21.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
+# Адрес Telegram API: через Cloudflare Worker, если задан TG_API_URL
+TG_API = os.environ.get("TG_API_URL", "https://api.telegram.org")
+# Секрет прокси из воркера (заголовок x-proxy-secret)
+TG_PROXY_SECRET = os.environ.get("TG_PROXY_SECRET", "")
 CALENDAR_URL = "https://ollf.ru/tournament/1067343/calendar"
 OUR_KEY = "ITPROVIDER"
 # PAST_MATCH = True  -> тестовый режим: разбор MATCH_URL, только лог
@@ -82,9 +86,19 @@ TIME_STR = "уточняется"
 
 
 def tg(method, **p):
-    r = requests.post("https://api.telegram.org/bot" + TOKEN + "/" + method,
-                      data=p, timeout=20)
-    return r.json()
+    last = None
+    for attempt in range(4):
+        try:
+            r = requests.post(
+                TG_API.rstrip("/") + "/bot" + TOKEN + "/" + method,
+                data=p, timeout=30,
+                headers={"x-proxy-secret": TG_PROXY_SECRET})
+            return r.json()
+        except Exception as e:
+            last = e
+            print("Telegram ошибка (попытка", attempt + 1, "из 4):", e)
+            time.sleep(5)
+    raise last
 
 
 def esc(s):
@@ -117,6 +131,25 @@ def jina(url, html=False):
             print("jina error:", e)
             time.sleep(10)
     return ""
+
+
+def jina_full_html(url):
+    """Полный HTML: до трёх попыток с обходом кэша — Jina иногда
+    отдаёт урезанную версию (~12 КБ вместо ~125 КБ)."""
+    html = ""
+    for attempt in range(3):
+        if attempt:
+            sep = "&" if "?" in url else "?"
+            u = url + sep + "r=" + str(attempt + 1)
+        else:
+            u = url
+        html = jina(u, html=True)
+        if len(html) >= 50000:
+            return html
+        print("HTML подозрительно мал (", len(html),
+              "байт) — повтор с обходом кэша")
+        time.sleep(5)
+    return html
 
 
 def find_brackets(s):
@@ -493,7 +526,7 @@ def render_post(ev):
         if ev["ours"]:
             pas = "🎯 Голевой пас: " + a + "\n" if a else ""
             return ("🔥⚽️ <b>Г-О-О-О-Л! 🔥⚽️</b>\n\n"
-                    "⚽ <b>АВТОР ГОЛА: " + p + "</b> 🌟\n" + pas
+                    "⚽ <b>" + p + " ЗАБИВАЕТ!</b> 🌟\n" + pas
                     + "⏱ На " + str(m) + "' минуте!\n\n" + st)
         return ("😢 <b>Пропускаем...</b> 😢\n\n"
                 "На " + str(m) + "' минуте соперник забивает.\n\n" + st)
@@ -598,12 +631,14 @@ def announcement(opponent, mdate, time_str, loc):
             "🗺 Локация: " + esc(loc) + "\n\n"
             "🔗 Трансляция: " + VK_TRANSLATION + "\n\n"
             "Следите за обновлениями в этом чате.")
-    
+
+
 def hour_reminder(opponent, time_str, loc):
     return ("⏰ <b>Через час — ИГРА!</b>\n\n"
             "🆚 Соперник: <b>«" + esc(opponent) + "»</b>\n\n"
             "⏱ Начало в <b>" + time_str + "</b> (МСК)\n\n"
             "📍 <b>" + esc(loc) + "</b>")
+
 
 def test_mode():
     """Тестовый прогон на сыгранном матче: только лог."""
@@ -611,7 +646,7 @@ def test_mode():
     if not md:
         print("Страница матча не скачалась")
         return
-    html = jina(MATCH_URL, html=True)
+    html = jina_full_html(MATCH_URL)
     t1, t2 = parse_teams(md)
     print("Команды:", t1, "vs", t2)
     try:
@@ -635,6 +670,9 @@ def test_mode():
 def main():
     global OUR_IS_HOME, START_H, START_M, TIME_STR
     print("ВЕРСИЯ КОДА:", VERSION)
+    print("Telegram API через:", TG_API.rstrip("/")
+          if TG_API.rstrip("/") != "https://api.telegram.org"
+          else "напрямую (TG_API_URL не задан!)")
     now = datetime.now(MSK)
     if PAST_MATCH:
         test_mode()
@@ -650,7 +688,7 @@ def main():
     if mdate and mdate != (now.year, now.month, now.day):
         print("Наш матч не сегодня:", mdate, "— выходим")
         return
-# Страница матча: до двух попыток — Jina иногда отдаёт урезанную
+    # Страница матча: до двух попыток — Jina иногда отдаёт урезанную
     # версию без шапки, тогда дата не распознаётся
     t1 = t2 = None
     md = html = ""
@@ -661,7 +699,7 @@ def main():
         if not md:
             print("Страница матча не скачалась")
             continue
-        html = jina(match_url, html=True)
+        html = jina_full_html(match_url)
         t1, t2 = parse_teams(md)
         if OUR_KEY not in t1.upper() and OUR_KEY not in t2.upper():
             print("Это не наш матч:", t1, t2)
