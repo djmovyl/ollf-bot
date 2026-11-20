@@ -29,7 +29,7 @@ IMG_MD = re.compile(
 PAT_P = re.compile(
     r"\*\s+(\d{1,2})\s+" + LB + r"\s*"
     + "(" + NAME + r")\s+(" + NAME + r")\s*"
-    + r"(?:" + LP + "К" + RP + r"|ВР)?"
+    + "(" + LP + "К" + RP + "|ВР)?"
     + RB + LP + r"\s*https://ollf\.ru/player/", re.I)
 PAT_TEAM = re.compile(
     LB + r"([^" + LB + RB + "!]+?)" + RB + LP
