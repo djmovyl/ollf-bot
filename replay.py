@@ -1,7 +1,7 @@
 import os, re, time, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "2.5.1 (20.11.2026)"
+VERSION = "2.6 (20.11.2026)"
 
 # ===== НАСТРОЙКИ ТЕСТА =====
 # TEST_SEND = True  -> посты уходят в CHAT_ID (сейчас: тестовая группа)
@@ -21,27 +21,33 @@ MSK = timezone(timedelta(hours=3))
 MONTH_RE = "|".join(MONTHS_RU)
 WEEK_RE = "|".join(WEEKDAYS_RU)
 
+# Служебные константы для регулярок: в исходнике нет ни одной
+# backslash-последовательности, чтобы код не портился при копировании.
 BS = chr(92)
 LB = BS + "["
 RB = BS + "]"
 LP = BS + "("
 RP = BS + ")"
+D = BS + "d"
+S = BS + "s"
 
-TIME_PAT = re.compile(r"(\d{1,3})\'\s*(\d{2})\'\'")
-SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*$")
-NAME = "[" + chr(1040) + "-" + chr(1071) + chr(1025) + "][а-яё\-]+"
-NAME_RE = re.compile(NAME + "\s+" + NAME)
-IMG_MD = re.compile(
-    "!" + LB + "[^" + RB + "]*" + RB + LP + "[^" + RP + "]*" + RP)
+TIME_PAT = re.compile(LP + D + "{1,3}" + "'" + S + "*"
+                      + LP + D + "{2}" + "''")
+SCORE_END = re.compile(LP + D + "{1,2}" + S + "*" + ":" + S + "*"
+                       + LP + D + "{1,2}" + S + "*$")
+NAME = "[А-ЯЁ][а-яё-]+"
+NAME_RE = re.compile(NAME + S + "+" + NAME)
+IMG_MD = re.compile("!" + LB + "^" + RB + "*" + RB
+                    + LP + "^" + RP + "*" + RP)
 PAT_P = re.compile(
-    "\*\s+(\d{1,2})\s+" + LB + "\s*"
-    + "(" + NAME + ")\s+(" + NAME + ")\s*"
-    + "(" + LP + "К" + RP + "|ВР)?"
-    + RB + LP + "\s*https://ollf\.ru/player/", re.I)
+    "[*]" + S + "+" + LP + D + "{1,2}" + S + "+" + LB + S + "*"
+    + LP + NAME + RP + S + "+" + LP + NAME + RP + S + "*"
+    + LP + LP + "К" + RP + "|" + "ВР" + RP + "?" + RB
+    + LP + S + "*" + "https://ollf" + BS + "." + "ru/player/", re.I)
 PAT_TEAM = re.compile(
-    LB + "([^" + LB + RB + "!]+?)" + RB + LP
-    + "https://ollf\.ru/tournament/\d+/teams/application\?team_id=\d+",
-    re.I)
+    LB + LP + "^" + LB + RB + "!" + RB + "+?" + RP + RB + LP
+    + "https://ollf" + BS + "." + "ru/tournament/" + D
+    + "+/teams/application" + BS + "?" + "team_id=" + D + "+", re.I)
 
 CARD_RED = ("кк", "красн", "🟥", "red card", "удал",
             "card-red", "card_red", "redcard")
@@ -54,10 +60,11 @@ JUNK = ("кубок", "чемпионат", "лига", "турнир", "кал�
         "события", "автогол")
 
 DT_LINE = re.compile(
-    "(\d{1,2})\s+(" + MONTH_RE + ")\s*(?:/|,)\s*(" + WEEK_RE
-    + ")\s*(?:/|,)?\s*(\d{1,2}):(\d{2})", re.I)
-VENUE_RE = re.compile(
-    "(?:📍|location)[^\S\n]*([А-ЯЁA-Z][А-ЯЁа-яёA-Za-z0-9\- ]{1,25})")
+    LP + D + "{1,2}" + S + "+" + LP + MONTH_RE + RP + S + "*"
+    + "(?:/|,)" + S + "*" + LP + WEEK_RE + RP + S + "*"
+    + "(?:/|,)?" + S + "*" + LP + D + "{1,2}" + ":" + D + "{2}")
+VENUE_WORDS = ("Манеж", "Стадион", "Арена", "Спорткомплекс", "ФОК",
+               "СК ", "Тасма")
 
 
 def esc(s):
@@ -111,30 +118,71 @@ def find_brackets(s):
     return res
 
 
-def extract_match_info(md, html):
-    """Дата/время/локация со страницы матча:
-    15 ноября / воскресенье / 20:00, локация после значка геолокации."""
+def strip_tags(html):
+    return re.sub("<[^>]*>", " ", html)
+
+
+def loc_from_window(win):
+    """Локация из окна шапки: сначала текст после 📍,
+    потом известные слова (Манеж/Стадион/Тасма...)."""
+    i = win.find("📍")
+    if i >= 0:
+        tail = win[i + 1:]
+        toks = []
+        for line in tail.splitlines():
+            for w in line.split():
+                if w.isalpha():
+                    toks.append(w)
+            if toks:
+                return " ".join(toks[:2])
+    for kw in VENUE_WORDS:
+        for line in win.splitlines():
+            if kw.lower() in line.lower():
+                toks = []
+                for w in line.split():
+                    if w.isalpha():
+                        toks.append(w)
+                    if len(toks) >= 2:
+                        break
+                if toks:
+                    return " ".join(toks[:2])
+    return "уточняется"
+
+
+def extract_match_info(md, html, t1, t2):
+    """Дата/время/локация со страницы матча.
+    Формат: '15 ноября / воскресенье / 20:00'.
+    Из всех кандидатов выбирается тот, рядом с которым
+    встречаются имена обеих команд."""
     mdate = None
     mtime = None
     loc = "уточняется"
-    for text in (md, html or ""):
-        m = DT_LINE.search(text)
-        if m:
+    texts = [md]
+    if html:
+        texts.append(strip_tags(html))
+    cands = []
+    for text in texts:
+        if not text:
+            continue
+        for m in DT_LINE.finditer(text):
+            win = text[max(0, m.start() - 600): m.end() + 600]
+            score = 0
+            for name in (t1, t2):
+                if any(p in win for p in name.split()):
+                    score += 1
             d = int(m.group(1))
             mo = MONTHS_RU.index(m.group(2).lower()) + 1
-            mdate = (datetime.now(MSK).year, mo, d)
-            mtime = (int(m.group(4)), int(m.group(5)))
-            break
-    for text in (md, html or ""):
-        vm = VENUE_RE.search(text)
-        if vm:
-            loc = vm.group(1).strip()
-            break
-    if loc == "уточняется":
-        vm = re.search(r"(Тасма|Манеж|Стадион|Арена|ФОК|СК)\s*"
-                       r"[А-ЯЁA-Za-z0-9]*", md)
-        if vm:
-            loc = vm.group(0).strip()
+            cd = (datetime.now(MSK).year, mo, d)
+            ct = (int(m.group(4)), int(m.group(5)))
+            cands.append((score, -m.start(), cd, ct, win))
+            print("Кандидат даты:", m.group(0), "| очки:", score)
+    if cands:
+        best = max(cands, key=lambda c: (c[0], c[1]))
+        mdate, mtime, win = best[2], best[3], best[4]
+        loc = loc_from_window(win)
+        print("Выбранная шапка: дата", mdate, "| время", mtime)
+    else:
+        print("Строк с датой/временем не найдено")
     return mdate, mtime, loc
 
 
@@ -207,23 +255,46 @@ def send_lineup(players):
          + "\n".join(lines) + "\n\nВ бой, ITPROVIDER! 💪")
 
 
+def cut_num(s, key):
+    """Достаёт число после key='oid=' / 'id=', не задевая чужие поля
+    (например, 'id=' внутри 'oid=')."""
+    start = 0
+    while True:
+        i = s.find(key, start)
+        if i < 0:
+            return None
+        if i > 0 and s[i - 1].isalnum():
+            start = i + 1
+            continue
+        out = ""
+        for ch in s[i + len(key):]:
+            if ch.isdigit() or (ch == "-" and not out):
+                out += ch
+            else:
+                break
+        if out:
+            return out
+        start = i + 1
+
+
 def find_stream_url(texts):
     for text in texts:
         if not text:
             continue
-        for m in re.finditer(
-                "https?://[^\s\"\'<>()\\]*video_ext\.php[^\s\"\'<>()\\]*",
-                text):
-            u = m.group(0).replace("&amp;", "&")
-            om = re.search("oid=(-?\d+)", u)
-            im = re.search("\bid=(\d+)", u)
-            if om and im:
-                return ("https://vkvideo.ru/video" + om.group(1)
-                        + "_" + im.group(1))
-        for m in re.finditer(
-                "https?://[^\s\"\'<>()\\]*(?:vkvideo\.ru|vk\.com|vk\.ru)"
-                "/(?:video|live)-?\d+_\d+[^\s\"\'<>()\\]*", text):
-            return m.group(0).replace("&amp;", "&")
+        t = text.replace("&amp;", "&")
+        for tok in (t.replace('"', " ").replace("'", " ")
+                    .replace("<", " ").replace(">", " ").split()):
+            low = tok.lower()
+            if "video_ext.php" in low:
+                oid = cut_num(tok, "oid=")
+                vid = cut_num(tok, "id=")
+                if oid and vid:
+                    return "https://vkvideo.ru/video" + oid + "_" + vid
+            if low.startswith("http"):
+                for key in ("vkvideo.ru/video", "vkvideo.ru/live",
+                            "vk.com/video", "vk.ru/video"):
+                    if key in low:
+                        return tok.rstrip(",;)]}.")
     return None
 
 
@@ -278,6 +349,25 @@ def md_events(md):
     return out
 
 
+def merge_events(md, proto):
+    evs = []
+    seen = set()
+    sources = [md_events(md)]
+    if proto:
+        sources.append(md_events(proto))
+    for src in sources:
+        for e in src:
+            if e["et"] == "unknown":
+                continue
+            key = (e["minute"], e["et"], tuple(e["players"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            evs.append(e)
+    evs.sort(key=lambda e: e["minute"])
+    return evs
+
+
 def classify_card(html, tstr, player):
     """Определяет цвет карточки по HTML-фрагменту вокруг события."""
     if not html:
@@ -322,21 +412,21 @@ def render_post(ev):
             pas = "🎯 Голевой пас: " + a + "\n" if a else ""
             return ("🔥⚽️ <b>Г-О-О-О-Л! 🔥⚽️</b>\n\n"
                     "⚽ <b>АВТОР ГОЛА: " + p + "</b> 🌟\n" + pas
-                    + "⏱ На " + str(m) + "\' минуте!\n\n" + st)
+                    + "⏱ На " + str(m) + "' минуте!\n\n" + st)
         return ("😢 <b>Пропускаем...</b> 😢\n\n"
-                "На " + str(m) + "\' минуте соперник забивает.\n\n" + st)
+                "На " + str(m) + "' минуте соперник забивает.\n\n" + st)
     if ev["et"] == "yellow":
         if ev["ours"]:
             return ("🟡 <b>ЖЁЛТАЯ КАРТОЧКА у нас</b>\n\n🟡 " + p
-                    + "\n⏱ На " + str(m) + "\' минуте.")
+                    + "\n⏱ На " + str(m) + "' минуте.")
         return ("🟡 <b>Жёлтая карточка у соперника</b>\n\n🟡 " + p
-                + "\n⏱ На " + str(m) + "\' минуте.")
+                + "\n⏱ На " + str(m) + "' минуте.")
     if ev["et"] == "red":
         if ev["ours"]:
             return ("🚨 <b>КРАСНАЯ КАРТОЧКА — УДАЛЕНИЕ У НАС</b>\n\n🔴 "
-                    + p + "\n⏱ На " + str(m) + "\' минуте.")
+                    + p + "\n⏱ На " + str(m) + "' минуте.")
         return ("🚨 <b>КРАСНАЯ КАРТОЧКА У СОПЕРНИКА!</b>\n\n🔴 " + p
-                + "\n⏱ На " + str(m) + "\' минуте.")
+                + "\n⏱ На " + str(m) + "' минуте.")
     return None
 
 
@@ -370,7 +460,7 @@ def main():
     print("Команды:", t1, "vs", t2, "| Мы хозяева:", OUR_IS_HOME)
 
     # --- АНОНС ---
-    mdate, mtime, loc = extract_match_info(md, html)
+    mdate, mtime, loc = extract_match_info(md, html, t1, t2)
     print("Шапка матча: дата", mdate, "| время", mtime, "| локация", loc)
     send(announcement(t2 if OUR_IS_HOME else t1, mdate, mtime, loc))
 
@@ -384,14 +474,18 @@ def main():
         print("ТЕСТ СОСТАВ — не найден")
 
     # --- ТРАНСЛЯЦИЯ (отдельным постом) ---
-    surl = get_stream(MATCH_URL)
-    if surl:
-        send("📺 <b>А вот и ссылка на игру!</b>\n\n" + surl)
-    else:
-        print("ТЕСТ ТРАНСЛЯЦИЯ — не найдена")
+    try:
+        surl = get_stream(MATCH_URL)
+        if surl:
+            send("📺 <b>А вот и ссылка на игру!</b>\n\n" + surl)
+        else:
+            print("ТЕСТ ТРАНСЛЯЦИЯ — не найдена")
+    except Exception:
+        print("Ошибка блока трансляции (продолжаем):")
+        print(traceback.format_exc())
 
     # --- СОБЫТИЯ ---
-    raw_evs = md_events(md)
+    raw_evs = merge_events(md, proto)
     if not raw_evs:
         print("События не распознаны. Сырой раздел События матча:")
         idx = md.find("События матча")
@@ -419,7 +513,7 @@ def main():
     for ev in evs:
         post = render_post(ev)
         if post:
-            print("---- СОБЫТИЕ:", ev["et"], str(ev["minute"]) + "\' ----")
+            print("---- СОБЫТИЕ:", ev["et"], str(ev["minute"]) + "' ----")
             send(post)
 
     # --- ИТОГ ---
