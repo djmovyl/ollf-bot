@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.12 (20.11.2026)"
+VERSION = "bot-2.13 (20.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -539,9 +539,8 @@ def line_date(s, today):
 
 
 def find_our_match(cal_md, today):
-    """Ищем наш матч в календаре. Дата, время и площадка могут лежать
-    не в самой строке с командой, а в соседних ячейках — поэтому
-    берём широкий контекст (4 строки вверх, 4 вниз)."""
+    """Ищем наш матч в календаре. Время и площадка — в соседних ячейках,
+    дата — в ближайшем заголовке секции выше строки матча."""
     cands = []
     lines = cal_md.splitlines()
     for i, raw in enumerate(lines):
@@ -559,9 +558,14 @@ def find_our_match(cal_md, today):
         dctx = " | ".join(wide)
         tm = re.search(r"\b(\d{1,2}):(\d{2})\b", ctx)
         vm = VENUE_CTX.search(dctx)
+        date = None
+        for j in range(i, max(-1, i - 16), -1):
+            date = line_date(lines[j].strip(), today)
+            if date:
+                break
         cands.append({"url": "https://ollf.ru/match/" + m.group(1),
                       "line": s, "context": ctx,
-                      "date": line_date(dctx, today),
+                      "date": date,
                       "time": (int(tm.group(1)), int(tm.group(2)))
                               if tm else None,
                       "venue": vm.group(0).strip() if vm else None,
@@ -646,42 +650,53 @@ def main():
     if mdate and mdate != (now.year, now.month, now.day):
         print("Наш матч не сегодня:", mdate, "— выходим")
         return
-    md = jina(match_url)
-    if not md:
-        print("Страница матча не скачалась — выходим")
-        return
-    html = jina(match_url, html=True)
-    t1, t2 = parse_teams(md)
-    if OUR_KEY not in t1.upper() and OUR_KEY not in t2.upper():
-        print("Это не наш матч:", t1, t2)
-        return
-    OUR_IS_HOME = OUR_KEY in t1.upper()
-    print("Команды:", t1, "vs", t2, "| Мы хозяева:", OUR_IS_HOME)
-
-    # Шапка со страницы: словесная шапка матч-дня, затем числовой фолбэк
+# Страница матча: до двух попыток — Jina иногда отдаёт урезанную
+    # версию без шапки, тогда дата не распознаётся
+    t1 = t2 = None
+    md = html = ""
     page_date = page_time = None
-    try:
-        page_date, page_time, page_loc = extract_match_info(md, html,
-                                                            t1, t2)
-    except Exception:
-        page_loc = "уточняется"
-        print("Ошибка разбора шапки (продолжаем):")
-        print(traceback.format_exc())
-    if page_time is None:
+    page_loc = "уточняется"
+    for attempt in range(2):
+        md = jina(match_url)
+        if not md:
+            print("Страница матча не скачалась")
+            continue
+        html = jina(match_url, html=True)
+        t1, t2 = parse_teams(md)
+        if OUR_KEY not in t1.upper() and OUR_KEY not in t2.upper():
+            print("Это не наш матч:", t1, t2)
+            return
+        OUR_IS_HOME = OUR_KEY in t1.upper()
+        print("Команды:", t1, "vs", t2, "| Мы хозяева:", OUR_IS_HOME)
         try:
-            n_date, n_time = page_datetime(md, html, t1, t2)
-            if n_time:
-                page_time = n_time
-                page_date = page_date or n_date
+            page_date, page_time, page_loc = extract_match_info(md, html,
+                                                                t1, t2)
         except Exception:
-            print("Ошибка числового фолбэка (продолжаем):")
+            page_loc = "уточняется"
+            print("Ошибка разбора шапки (продолжаем):")
             print(traceback.format_exc())
-
-    # Повторная проверка даты по данным страницы:
-    # в календаре дата может отсутствовать, а шапка матча её знает
-    today_t = (now.year, now.month, now.day)
+        if page_time is None:
+            try:
+                n_date, n_time = page_datetime(md, html, t1, t2)
+                if n_time:
+                    page_time = n_time
+                    page_date = page_date or n_date
+            except Exception:
+                print("Ошибка числового фолбэка (продолжаем):")
+                print(traceback.format_exc())
+        if page_date:
+            break
+        print("Шапка не распознана, попытка", attempt + 1, "из 2")
+        time.sleep(5)
+    if not md or not t1:
+        print("Не удалось получить страницу матча — выходим")
+        return
+    # Дату должны знать точно: без неё — ни анонса, ни постов
     eff_date = mdate or page_date
-    if eff_date and eff_date != today_t:
+    if eff_date is None:
+        print("Дату матча определить не удалось — выходим без постов")
+        return
+    if eff_date != (now.year, now.month, now.day):
         print("Наш матч не сегодня:", eff_date, "— выходим")
         return
 
