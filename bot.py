@@ -633,11 +633,10 @@ def announcement(opponent, mdate, time_str, loc):
             "Следите за обновлениями в этом чате.")
 
 
-def hour_reminder(opponent, time_str, loc):
-    return ("⏰ <b>Через час — ИГРА!</b>\n\n"
-            "🆚 Соперник: <b>«" + esc(opponent) + "»</b>\n\n"
+def hour_reminder(time_str, loc):
+    return ("⏰ <b>ИГРА УЖЕ СКОРО!</b>\n\n"
             "⏱ Начало в <b>" + time_str + "</b> (МСК)\n\n"
-            "📍 <b>" + esc(loc) + "</b>")
+            "📍 <b>" + loc.upper() + "</b>")
 
 
 def test_mode():
@@ -801,8 +800,7 @@ def main():
     if time_known and st.get("hour1") != tk:
         dt_min = (t0 - now).total_seconds() / 60
         if 50 <= dt_min <= 62.5 and LOCATION != "уточняется":
-            post = hour_reminder(t2 if OUR_IS_HOME else t1,
-                                 TIME_STR, LOCATION)
+            post = hour_reminder(TIME_STR, LOCATION)
             print("---- НАПОМИНАНИЕ ЗА ЧАС ----")
             print(post.replace("<b>", "").replace("</b>", ""))
             send(post)
