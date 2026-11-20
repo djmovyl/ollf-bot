@@ -1,7 +1,7 @@
 import os, re, time, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "2.8 (20.11.2026)"
+VERSION = "2.9 (20.11.2026)"
 
 # ===== НАСТРОЙКИ ТЕСТА =====
 # TEST_SEND = True  -> посты уходят в CHAT_ID (сейчас: тестовая группа)
@@ -33,8 +33,7 @@ NAME = r"[А-ЯЁ][а-яё\-]+"
 NAME_RE = re.compile(NAME + r"\s+" + NAME)
 IMG_MD = re.compile(
     "!" + LB + "[^" + RB + "]*" + RB + LP + "[^" + RP + "]*" + RP)
-# Паттерны состава — дословно из версии 2.5.1, где они находили
-# 10 игроков при том же размере протокола (22845 байт)
+# Паттерны состава — из версии 2.5.1, доказанно находят 10 игроков
 PAT_P = re.compile(
     r"\*\s+(\d{1,2})\s+" + LB + r"\s*"
     + "(" + NAME + r")\s+(" + NAME + r")\s*"
@@ -55,13 +54,14 @@ JUNK = ("кубок", "чемпионат", "лига", "турнир", "кал�
         "сезон", "тур ", "оллф", "статистика", "таблица", "протокол",
         "события", "автогол")
 
-# Города, которые нельзя выдавать за локацию матча
+# Города и регионы, которые нельзя выдавать за локацию матча
 CITY_WORDS = ("нижнекамск", "казань", "альметьевск", "чебоксары",
               "уфа", "нижний", "новгород", "набережные", "челны",
-              "москва", "татарстан")
+              "москва", "татарстан", "челны", "чемпионат", "лига",
+              "турнир", "матч", "соперник")
 
 # Между месяцем и временем — всё, кроме двоеточия и перевода строки,
-# и нежадно: разделитель не может сожрать цифру из времени
+# и нежадно: разделитель не может съесть цифру из времени
 DT_LINE = re.compile(
     r"(\d{1,2})\s+(" + MONTH_RE + r")[^:\n]{0,30}?(\d{1,2}):(\d{2})",
     re.I)
@@ -122,36 +122,55 @@ def strip_tags(html):
     return re.sub("<[^>]*>", " ", html)
 
 
-def loc_from_window(win, at):
-    """Локация из окна шапки. Перебираем все значки 📍 и берём
-    ближайший к найденной дате (с приоритетом тех, что после даты).
-    Токены-города пропускаем, из значка берём ровно одно слово."""
-    best = None
-    i = win.find("📍")
+def pin_tokens(text):
+    """Все значки 📍 в тексте: [(позиция, первое слово после значка)]."""
+    out = []
+    i = text.find("📍")
     while i >= 0:
         toks = []
-        for w in win[i + 1:].split():
-            t = w.strip(".,;:!?()[]")
+        for w in text[i + 1:].split():
+            t = w.strip(".,;:!?()[]|/")
             if t.isalpha():
                 toks.append(t)
             elif toks:
                 break
-        if toks and toks[0].lower() not in CITY_WORDS:
-            dist = i - at if i >= at else (at - i) * 2
+        if toks:
+            out.append((i, toks[0]))
+        i = text.find("📍", i + 1)
+    return out
+
+
+def find_location(texts, date_positions):
+    """Локация по всей странице: среди всех 📍 берём ближайший
+    к позиции даты матча в том же тексте. Города и слова-обломки
+    («емпионат») отбрасываем. Затем fallback по названиям площадок."""
+    best = None
+    for text, dpos in zip(texts, date_positions):
+        if not text or dpos is None or not dpos:
+            continue
+        for p, tok in pin_tokens(text):
+            if tok.lower() in CITY_WORDS:
+                print("📍 пропущен (город/мусор):", tok)
+                continue
+            dist = min(abs(p - d) for d in dpos)
+            print("📍 кандидат:", tok, "| дистанция до даты:", dist)
             if best is None or dist < best[0]:
-                best = (dist, toks[0])
-        i = win.find("📍", i + 1)
-    if best:
+                best = (dist, tok)
+    if best and best[0] <= 3000:
         return best[1]
-    # Запасной ход: известные названия площадок в окне
-    for kw in ("Тасма", "Манеж", "Стадион", "Арена", "ФОК",
-               "Спорткомплекс"):
-        for line in win.splitlines():
-            if kw.lower() in line.lower():
-                toks = [w for w in line.split()
-                        if w.isalpha() and w.lower() not in CITY_WORDS]
-                if toks:
-                    return toks[0]
+    # Fallback: названия площадок где угодно в тексте
+    for text in texts:
+        if not text:
+            continue
+        for kw in ("Тасма", "Манеж", "Стадион", "Арена", "ФОК",
+                   "Спорткомплекс"):
+            for line in text.splitlines():
+                if kw.lower() in line.lower():
+                    toks = [w for w in line.split()
+                            if w.isalpha()
+                            and w.lower() not in CITY_WORDS]
+                    if toks:
+                        return toks[0]
     return "уточняется"
 
 
@@ -163,29 +182,29 @@ def extract_match_info(md, html, t1, t2):
     if html:
         texts.append(strip_tags(html))
     cands = []
+    date_positions = []
     for text in texts:
-        if not text:
-            continue
-        for m in DT_LINE.finditer(text):
-            win_start = max(0, m.start() - 300)
-            win = text[win_start: m.end() + 600]
-            score = 0
-            for name in (t1, t2):
-                if any(p in win for p in name.split()):
-                    score += 1
-            cd = (datetime.now(MSK).year,
-                  MONTHS_RU.index(m.group(2).lower()) + 1,
-                  int(m.group(1)))
-            ct = (int(m.group(3)), int(m.group(4)))
-            cands.append((score, -m.start(), cd, ct,
-                          m.start() - win_start, win))
-            print("Кандидат даты:", m.group(0), "| очки:", score)
+        positions = []
+        if text:
+            for m in DT_LINE.finditer(text):
+                positions.append(m.start())
+                win = text[max(0, m.start() - 300): m.end() + 600]
+                score = 0
+                for name in (t1, t2):
+                    if any(p in win for p in name.split()):
+                        score += 1
+                cd = (datetime.now(MSK).year,
+                      MONTHS_RU.index(m.group(2).lower()) + 1,
+                      int(m.group(1)))
+                ct = (int(m.group(3)), int(m.group(4)))
+                cands.append((score, -m.start(), cd, ct))
+                print("Кандидат даты:", m.group(0), "| очки:", score)
+        date_positions.append(positions)
     if cands:
         best = max(cands, key=lambda c: (c[0], c[1]))
         print("Выбранная шапка:", best[2], best[3])
-        print("ОКНО ШАПКИ (для отладки):",
-              best[5][:300].replace("\n", " | "))
-        return best[2], best[3], loc_from_window(best[5], best[4])
+        loc = find_location(texts, date_positions)
+        return best[2], best[3], loc
     print("Строк с датой/временем не найдено")
     return None, None, "уточняется"
 
@@ -244,19 +263,6 @@ def get_lineup(proto):
         return []
     cand = [pl for t, pl in secs if OUR_KEY.upper() in t.upper()]
     return max(cand, key=len) if cand else []
-
-
-def dump_protocol(proto):
-    """Печатает сырые строки протокола — чтобы увидеть реальный
-    формат состава, если регулярка его не взяла."""
-    print("---- СЫРЫЕ СТРОКИ ПРОТОКОЛА (для отладки) ----")
-    idx = proto.upper().find("СОСТАВ")
-    start = max(0, idx - 200) if idx >= 0 else 0
-    zone = proto[start: start + 4500]
-    for line in zone.splitlines():
-        s = line.strip()
-        if s and ("[" in s or s.startswith("*") or s.isdigit()):
-            print("|", s[:200])
 
 
 def send_lineup(players):
@@ -491,8 +497,7 @@ def main():
         print("ТЕСТ СОСТАВ — найдено", len(lineup), "игроков")
         send_lineup(lineup)
     else:
-        print("ТЕСТ СОСТАВ — не найден, сырой протокол:")
-        dump_protocol(proto)
+        print("ТЕСТ СОСТАВ — не найден")
 
     # --- ТРАНСЛЯЦИЯ (отдельным постом) ---
     try:
