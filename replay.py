@@ -1,39 +1,32 @@
-import os, re, time, requests, traceback
+import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "2.9 (20.11.2026)"
-
-# ===== НАСТРОЙКИ ТЕСТА =====
-# TEST_SEND = True  -> посты уходят в CHAT_ID (сейчас: тестовая группа)
-# TEST_SEND = False -> только печать в лог (безопасно)
-TEST_SEND = True
-CHAT_ID = "-1003949616458"
-MATCH_URL = "https://ollf.ru/match/5905503"   # матч с Триумфом
-OUR_KEY = "ITPROVIDER"
+VERSION = "replay-2.13 (20.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
+# Канал реплея: REPLAY_CHANNEL, если задан, иначе общий CHANNEL
+CHANNEL = os.environ.get("REPLAY_CHANNEL") or os.environ.get("CHANNEL", "")
+MATCH_URL = "https://ollf.ru/match/5905503"
+OUR_KEY = "ITPROVIDER"
+VK_TRANSLATION = "https://vkvideo.ru/@club154907309/all"
+STATE_FILE = "test_state.json"
+PAUSE = 3  # пауза между постами, сек
 
-MONTHS_RU = ("января февраля марта апреля мая июня "
-             "июля августа сентября октября ноября декабря").split()
-WEEKDAYS_RU = ("понедельник вторник среда четверг "
-               "пятница суббота воскресенье").split()
-MSK = timezone(timedelta(hours=3))
-MONTH_RE = "|".join(MONTHS_RU)
-
-# Константы для сборки регулярок, которые ломались при копировании
+# Служебные константы для регулярок: избегаем опасных последовательностей
 BS = chr(92)
 LB = BS + "["
 RB = BS + "]"
 LP = BS + "("
 RP = BS + ")"
+S = BS + "s"
 
 TIME_PAT = re.compile(r"(\d{1,3})'\s*(\d{2})''")
 SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*$")
 NAME = r"[А-ЯЁ][а-яё\-]+"
 NAME_RE = re.compile(NAME + r"\s+" + NAME)
+
 IMG_MD = re.compile(
     "!" + LB + "[^" + RB + "]*" + RB + LP + "[^" + RP + "]*" + RP)
-# Паттерны состава — из версии 2.5.1, доказанно находят 10 игроков
 PAT_P = re.compile(
     r"\*\s+(\d{1,2})\s+" + LB + r"\s*"
     + "(" + NAME + r")\s+(" + NAME + r")\s*"
@@ -53,18 +46,32 @@ CARD_YELLOW = ("жк", "жёлт", "желт", "жолт", "🟨", "yellow card"
 JUNK = ("кубок", "чемпионат", "лига", "турнир", "календарь", "группа",
         "сезон", "тур ", "оллф", "статистика", "таблица", "протокол",
         "события", "автогол")
+MONTHS_RU = ("января февраля марта апреля мая июня "
+             "июля августа сентября октября ноября декабря").split()
+WEEKDAYS_RU = ("понедельник вторник среда четверг "
+               "пятница суббота воскресенье").split()
+MSK = timezone(timedelta(hours=3))
+MONTH_RE = "|".join(MONTHS_RU)
 
-# Города и регионы, которые нельзя выдавать за локацию матча
 CITY_WORDS = ("нижнекамск", "казань", "альметьевск", "чебоксары",
               "уфа", "нижний", "новгород", "набережные", "челны",
-              "москва", "татарстан", "челны", "чемпионат", "лига",
-              "турнир", "матч", "соперник")
+              "москва", "татарстан", "чемпионат", "лига", "турнир",
+              "матч", "соперник", "емпионат")
 
-# Между месяцем и временем — всё, кроме двоеточия и перевода строки,
-# и нежадно: разделитель не может съесть цифру из времени
 DT_LINE = re.compile(
     r"(\d{1,2})\s+(" + MONTH_RE + r")[^:\n]{0,30}?(\d{1,2}):(\d{2})",
     re.I)
+NUM_DATE = re.compile(r"\b(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?\b")
+TIME_ONLY = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b")
+
+OUR_IS_HOME = True
+LOCATION = "уточняется"
+
+
+def tg(method, **p):
+    r = requests.post("https://api.telegram.org/bot" + TOKEN + "/" + method,
+                      data=p, timeout=20)
+    return r.json()
 
 
 def esc(s):
@@ -72,26 +79,21 @@ def esc(s):
 
 
 def send(text):
-    if not TEST_SEND:
-        print("[ТЕСТ] Сообщение НЕ отправлено:")
-        print(text.replace("<b>", "").replace("</b>", ""))
-        return
-    try:
-        r = requests.post(
-            "https://api.telegram.org/bot" + TOKEN + "/sendMessage",
-            data={"chat_id": CHAT_ID, "text": text[:3900],
-                  "parse_mode": "HTML"}, timeout=20)
-        print("Отправлено:", r.json().get("ok"))
-    except Exception as e:
-        print("Ошибка отправки:", e)
+    res = tg("sendMessage", chat_id=CHANNEL, text=text[:3900],
+             parse_mode="HTML")
+    if not res.get("ok"):
+        print("Telegram error:", res)
+    else:
+        print("[ОТПРАВЛЕНО] ", text.replace("<b>", "")
+              .replace("</b>", "")[:120].replace("\n", " | "))
 
 
 def jina(url, html=False):
     h = {"X-Return-Format": "html" if html else "markdown"}
-    for _ in range(4):
+    for _ in range(3):
         try:
             r = requests.get("https://r.jina.ai/" + url,
-                             headers=h, timeout=90)
+                             headers=h, timeout=60)
             print("jina:", url, "html" if html else "md",
                   "->", r.status_code, len(r.text))
             if r.status_code == 200 and r.text.strip():
@@ -123,7 +125,6 @@ def strip_tags(html):
 
 
 def pin_tokens(text):
-    """Все значки 📍 в тексте: [(позиция, первое слово после значка)]."""
     out = []
     i = text.find("📍")
     while i >= 0:
@@ -141,12 +142,9 @@ def pin_tokens(text):
 
 
 def find_location(texts, date_positions):
-    """Локация по всей странице: среди всех 📍 берём ближайший
-    к позиции даты матча в том же тексте. Города и слова-обломки
-    («емпионат») отбрасываем. Затем fallback по названиям площадок."""
     best = None
     for text, dpos in zip(texts, date_positions):
-        if not text or dpos is None or not dpos:
+        if not text or not dpos:
             continue
         for p, tok in pin_tokens(text):
             if tok.lower() in CITY_WORDS:
@@ -158,7 +156,6 @@ def find_location(texts, date_positions):
                 best = (dist, tok)
     if best and best[0] <= 3000:
         return best[1]
-    # Fallback: названия площадок где угодно в тексте
     for text in texts:
         if not text:
             continue
@@ -175,9 +172,6 @@ def find_location(texts, date_positions):
 
 
 def extract_match_info(md, html, t1, t2):
-    """Дата/время/локация со страницы матча.
-    Формат: '15 ноября / воскресенье / 20:00'.
-    Из кандидатов выбирается тот, рядом с которым обе команды."""
     texts = [md]
     if html:
         texts.append(strip_tags(html))
@@ -203,8 +197,7 @@ def extract_match_info(md, html, t1, t2):
     if cands:
         best = max(cands, key=lambda c: (c[0], c[1]))
         print("Выбранная шапка:", best[2], best[3])
-        loc = find_location(texts, date_positions)
-        return best[2], best[3], loc
+        return best[2], best[3], find_location(texts, date_positions)
     print("Строк с датой/временем не найдено")
     return None, None, "уточняется"
 
@@ -231,6 +224,10 @@ def is_junk(name):
     return any(w in low for w in JUNK)
 
 
+LINEUP_STOP = ("распечатать протокол", "турнирная таблица",
+               "о турнире", "календарь")
+
+
 def parse_lineups(md):
     idx = md.upper().find("СТАРТОВЫЕ СОСТАВЫ")
     if idx < 0:
@@ -239,6 +236,9 @@ def parse_lineups(md):
     cur = None
     for raw in md[idx: idx + 8000].splitlines():
         line = IMG_MD.sub(" ", raw)
+        low = line.lower()
+        if any(k in low for k in LINEUP_STOP):
+            break
         m = PAT_TEAM.search(line)
         if m:
             cur = m.group(1).strip()
@@ -257,12 +257,20 @@ def parse_lineups(md):
     return sections or None
 
 
-def get_lineup(proto):
-    secs = parse_lineups(proto) if proto else None
-    if not secs:
-        return []
-    cand = [pl for t, pl in secs if OUR_KEY.upper() in t.upper()]
-    return max(cand, key=len) if cand else []
+def our_lineup(md, proto):
+    for label, text in (("protocol", proto), ("main", md)):
+        if not text:
+            continue
+        secs = parse_lineups(text)
+        if not secs:
+            continue
+        print("Составы из", label, ":", [s[0] for s in secs][:8], "...")
+        cand = [pl for t, pl in secs if OUR_KEY.upper() in t.upper()]
+        if cand:
+            best = max(cand, key=len)
+            if len(best) >= 5:
+                return best
+    return None
 
 
 def send_lineup(players):
@@ -274,7 +282,7 @@ def send_lineup(players):
         elif "К" in mark:
             s += " 🅺"
         lines.append(esc(s))
-    send("📋 <b>Наш состав на игру</b>\n\n"
+    send("📋 <b>Наш состав на сегодняшнюю игру</b>\n\n"
          + "\n".join(lines) + "\n\nВ бой, ITPROVIDER! 💪")
 
 
@@ -319,13 +327,13 @@ def find_stream_url(texts):
     return None
 
 
-def get_stream(match_url):
+def get_stream(match_url, md):
     burl = match_url + "?active=broadcast"
-    for attempt in range(4):
-        surl = find_stream_url([jina(burl, html=True), jina(burl)])
+    for attempt in range(3):
+        surl = find_stream_url([jina(burl, html=True), jina(burl), md])
         if surl:
             return surl
-        print("Трансляция не найдена, попытка", attempt + 1, "из 4")
+        print("Трансляция не найдена, попытка", attempt + 1, "из 3")
         time.sleep(10)
     return None
 
@@ -450,74 +458,117 @@ def render_post(ev):
     return None
 
 
-def announcement(opponent, mdate, mtime, loc):
+def load_state():
+    try:
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_state(s):
+    with open(STATE_FILE, "w") as f:
+        json.dump(s, f)
+
+
+def announcement(opponent, mdate, time_str, loc):
     ds = "уточняется"
     if mdate:
         y, mo, d = mdate
         ds = str(d) + " " + MONTHS_RU[mo - 1] + ", "
         ds += WEEKDAYS_RU[datetime(y, mo, d).weekday()]
-    ts = "уточняется"
-    if mtime:
-        ts = format(mtime[0], "02d") + ":" + format(mtime[1], "02d")
     return ("🔴 <b>FC ITPROVIDER — ДЕНЬ МАТЧА</b> 🔴\n\n"
             "🆚 Соперник: «" + esc(opponent) + "»\n"
             "🗓 Дата: " + ds + "\n"
-            "⏱ Старт: " + ts + " (МСК)\n"
+            "⏱ Старт: " + time_str + " (МСК)\n"
             "🗺 Локация: " + esc(loc) + "\n\n"
-            "Следите за обновлениями в нашей группе.")
+            "🔗 Трансляция: " + VK_TRANSLATION + "\n\n"
+            "Следите за обновлениями в этом чате.")
+
+
+def hour_reminder(opponent, time_str, loc):
+    return ("⏰ <b>Через час — ИГРА!</b>\n\n"
+            "🆚 Соперник: <b>«" + esc(opponent) + "»</b>\n\n"
+            "⏱ Начало в <b>" + time_str + "</b> (МСК)\n\n"
+            "📍 <b>" + esc(loc) + "</b>")
 
 
 def main():
-    global OUR_IS_HOME
+    global OUR_IS_HOME, LOCATION
     print("ВЕРСИЯ КОДА:", VERSION)
+    if os.environ.get("REPLAY_RESET") in ("yes", "true", "1"):
+        try:
+            os.remove(STATE_FILE)
+            print("Состояние реплея сброшено")
+        except Exception:
+            pass
+    st = load_state()
+    if st.get("done"):
+        print("Реплей уже был отыгран. Для повторного прогона "
+              "запусти с параметром reset=yes")
+        return
+    st = {"seen": []}
+
     md = jina(MATCH_URL)
     if not md:
         print("Страница матча не скачалась")
         return
     html = jina(MATCH_URL, html=True)
+    proto = jina(MATCH_URL + "?active=protocol")
     t1, t2 = parse_teams(md)
     OUR_IS_HOME = OUR_KEY in t1.upper()
     print("Команды:", t1, "vs", t2, "| Мы хозяева:", OUR_IS_HOME)
 
-    # --- АНОНС ---
-    try:
-        mdate, mtime, loc = extract_match_info(md, html, t1, t2)
-        print("Шапка матча: дата", mdate, "| время", mtime,
-              "| локация", loc)
-    except Exception:
-        mdate, mtime, loc = None, None, "уточняется"
-        print("Ошибка разбора шапки (продолжаем):")
-        print(traceback.format_exc())
-    send(announcement(t2 if OUR_IS_HOME else t1, mdate, mtime, loc))
+    mdate, mtime, LOCATION = extract_match_info(md, html, t1, t2)
+    time_str = "уточняется"
+    if mtime:
+        time_str = format(mtime[0], "02d") + ":" + format(mtime[1], "02d")
+    print("Шапка: дата", mdate, "| время", time_str,
+          "| локация", LOCATION)
 
-    # --- СОСТАВ ---
-    proto = jina(MATCH_URL + "?active=protocol")
-    lineup = get_lineup(proto)
+    opponent = t2 if OUR_IS_HOME else t1
+
+    print("=== 1/7 Анонс ===")
+    send(announcement(opponent, mdate, time_str, LOCATION))
+    time.sleep(PAUSE)
+
+    print("=== 2/7 Напоминание за час ===")
+    send(hour_reminder(opponent, time_str, LOCATION))
+    time.sleep(PAUSE)
+
+    print("=== 3/7 Состав ===")
+    lineup = our_lineup(md, proto)
     if lineup:
-        print("ТЕСТ СОСТАВ — найдено", len(lineup), "игроков")
+        print("Найдено игроков:", len(lineup))
         send_lineup(lineup)
     else:
-        print("ТЕСТ СОСТАВ — не найден")
+        print("Состав не найден — пост пропускаем")
+    time.sleep(PAUSE)
 
-    # --- ТРАНСЛЯЦИЯ (отдельным постом) ---
+    print("=== 4/7 Трансляция ===")
     try:
-        surl = get_stream(MATCH_URL)
+        surl = get_stream(MATCH_URL, md)
         if surl:
             send("📺 <b>А вот и ссылка на игру!</b>\n\n" + surl)
         else:
-            print("ТЕСТ ТРАНСЛЯЦИЯ — не найдена")
+            print("Ссылка не найдена — пост пропускаем")
     except Exception:
         print("Ошибка блока трансляции (продолжаем):")
         print(traceback.format_exc())
+    time.sleep(PAUSE)
 
-    # --- СОБЫТИЯ ---
-    raw_evs = merge_events(md, proto)
-    if not raw_evs:
-        print("События не распознаны")
-        return
-    our_names = set(n for _, n, _ in lineup)
-    evs = []
-    for e in raw_evs:
+    print("=== 5/7 МАТЧ НАЧАЛСЯ ===")
+    send("🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n🆚 <b>" + t1 + " vs " + t2
+         + "</b>\n\nДержим кулаки за команду! 👊")
+    time.sleep(PAUSE)
+
+    print("=== 6/7 События ===")
+    our_names = set(n for _, n, _ in lineup) if lineup else set()
+    if not our_names:
+        print("ВНИМАНИЕ: состав пуст — карточки могут "
+              "неверно определить «наши/соперник»")
+    events = []
+    for e in merge_events(md, proto):
         ev = {"et": e["et"], "minute": e["minute"], "score": e["score"],
               "player": e["players"][0] if e["players"] else "?",
               "assist": e["players"][1] if len(e["players"]) > 1 else None}
@@ -529,17 +580,22 @@ def main():
             ev["ours"] = OUR_IS_HOME == (e["scoring"] == "home")
         else:
             ev["ours"] = any(p in our_names for p in e["players"])
-        evs.append(ev)
-    send("🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n🆚 <b>" + t1 + " vs " + t2
-         + "</b>\n\nДержим кулаки за команду! 👊")
-    for ev in evs:
+        eid = str(ev["minute"]) + "-" + ev["et"] + "-" + ev["player"]
+        if eid in st["seen"]:
+            continue
+        events.append(ev)
+        st["seen"].append(eid)
+    for ev in events:
         post = render_post(ev)
         if post:
-            print("---- СОБЫТИЕ:", ev["et"], str(ev["minute"]) + "' ----")
+            print("ПОСТ:", str(ev["minute"]) + "'", ev["et"])
             send(post)
+            time.sleep(PAUSE)
+    if events:
+        st["score"] = events[-1]["score"]
 
-    # --- ИТОГ ---
-    sc = evs[-1]["score"]
+    print("=== 7/7 Итог ===")
+    sc = st.get("score", [0, 0])
     our, opp = (sc[0], sc[1]) if OUR_IS_HOME else (sc[1], sc[0])
     if our > opp:
         verdict = "🎉 <b>ПОБЕДА!</b> 🎉"
@@ -549,7 +605,11 @@ def main():
         verdict = "🤝 <b>НИЧЬЯ</b> 🤝"
     send("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n📊 Итоговый счёт: <b>"
          + str(sc[0]) + " : " + str(sc[1]) + "</b>\n\n" + verdict
-         + "\n\nСпасибо за игру, команда! 🤝")
+         + "\n\nСпасибо за игру, команду! 🤝")
+
+    st["done"] = True
+    save_state(st)
+    print("РЕПЛЕЙ ЗАВЕРШЁН. Всего событий запостено:", len(events))
 
 
 if __name__ == "__main__":
@@ -557,4 +617,9 @@ if __name__ == "__main__":
         main()
     except Exception:
         print(traceback.format_exc())
+        try:
+            send("🚨 Ошибка реплея:\n<pre>"
+                 + esc(traceback.format_exc()[-2500:]) + "</pre>")
+        except Exception:
+            print("Не удалось отправить отчёт об ошибке")
         raise
