@@ -61,7 +61,7 @@ def send(text):
 
 # ================= JINA =================
 def jina(url, html=False):
-    headers = {"X-Return-Format": "html"} if html else {}
+    headers = {"X-Return-Format": "html" if html else "markdown"}
     for attempt in range(4):
         try:
             r = requests.get("https://r.jina.ai/" + url,
@@ -176,16 +176,23 @@ def build_announcement(opponent, mdate, time_str):
 
 # ================= СОСТАВЫ =================
 NAME_TOKEN = r"[А-ЯЁ][а-яё\-]+"
-# Номер перед именем: '1 Семёнов Александр'.
-# Группы: 1 — номер, 2 — имя, 3 — фамилия
+# Номер перед именем: '1 Семёнов Александр'. Группы: 1-номер, 2-имя, 3-фамилия
 PAT_NUM_FIRST = re.compile(
     r"(?<![\w.])(\d{1,2})[.\)]?\s+(?:$К$|ВР)?\s*"
     r"(" + NAME_TOKEN + r")\s+(" + NAME_TOKEN + r")", re.IGNORECASE)
-# Номер после имени: 'Коротков Арсений 1'.
-# Группы: 1 — имя, 2 — фамилия, 3 — номер
+# Номер после имени: 'Коротков Арсений 1'. Группы: 1-имя, 2-фамилия, 3-номер
 PAT_NUM_LAST = re.compile(
     r"(" + NAME_TOKEN + r")\s+(" + NAME_TOKEN + r")"
     r"[.,]?\s*(?:$К$|ВР)?\s*(\d{1,2})(?!\d)", re.IGNORECASE)
+
+# Слова, которые никогда не являются именами игроков
+JUNK_WORDS = ("кубок", "чемпионат", "лига", "турнир", "календарь",
+              "группа", "сезон", "тур ", "оллф", "статистика",
+              "таблица", "протокол", "события", "автогол")
+
+def _is_junk_name(name):
+    low = name.lower()
+    return any(w in low for w in JUNK_WORDS)
 
 def _mark_around(line, start, span):
     window = line[max(0, start - 12): start + span + 12].upper()
@@ -225,12 +232,16 @@ def parse_lineups(md, ours_is_right):
             continue
         found = []
         for m in PAT_NUM_FIRST.finditer(clean):
-            name = m.group(2) + " " + m.group(3)
+            name = (m.group(2) + " " + m.group(3)).strip()
+            if _is_junk_name(name):
+                continue
             mark = _mark_around(clean, m.start(),
                                 len(name) + len(m.group(1)))
             found.append(("L", m.start(), int(m.group(1)), name, mark))
         for m in PAT_NUM_LAST.finditer(clean):
-            name = m.group(1) + " " + m.group(2)
+            name = (m.group(1) + " " + m.group(2)).strip()
+            if _is_junk_name(name):
+                continue
             mark = _mark_around(clean, m.start(),
                                 len(name) + len(m.group(3)))
             found.append(("R", m.start(), int(m.group(3)), name, mark))
@@ -248,10 +259,22 @@ def parse_lineups(md, ours_is_right):
     ours = right if ours_is_right else left
     if len(ours) >= 5:
         return ours
+
+    # Не набралось — печатаем сырые строки раздела для подстройки
+    print("---- СЫРЫЕ СТРОКИ РАЗДЕЛА СОСТАВОВ (до 60) ----")
+    shown = 0
+    for line in zone.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        print("|", s[:160])
+        shown += 1
+        if shown >= 60:
+            break
+    print("---- КОНЕЦ СЫРЫХ СТРОК ----")
     return None
 
 def dump_lineup_diagnostics(md):
-    """Строки с цифрой и русским словом рядом — для подстройки парсера."""
     up = md.upper()
     idx = up.find("СТАРТОВЫЕ СОСТАВЫ")
     if idx < 0:
@@ -278,7 +301,6 @@ def get_lineup_from_sources(match_url, md, ours_is_right):
         players = parse_lineups(text, ours_is_right)
         if players:
             return players, label
-        dump_lineup_diagnostics(text)
     return None, None
 
 def send_lineup(players):
@@ -298,6 +320,7 @@ def find_stream_url(html, md):
     for text in (html, md):
         if not text:
             continue
+        # 1) VK-плеер во врезке: video_ext.php?oid=..&id=..
         for m in re.finditer(
                 r"https?://[^\s\"'<>()\\]*video_ext\.php[^\s\"'<>()\\]*",
                 text):
@@ -305,7 +328,8 @@ def find_stream_url(html, md):
             om = re.search(r"oid=(-?\d+)", u)
             im = re.search(r"\bid=(\d+)", u)
             if om and im:
-                return "https://vkvideo.ru/video" + om.group(1) + "_" + im.group(2)
+                return "https://vkvideo.ru/video" + om.group(1) + "_" + im.group(1)
+        # 2) прямые ссылки на видео или эфир VK
         for m in re.finditer(
                 r"https?://[^\s\"'<>()\\]*(?:vkvideo\.ru|vk\.com|vk\.ru)"
                 r"/(?:video|live)-?\d+_\d+[^\s\"'<>()\\]*", text):
