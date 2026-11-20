@@ -21,6 +21,9 @@ MATCH_URL = "https://ollf.ru/match/5905503"
 START_H, START_M = 18, 0
 DURATION_MIN = 75
 
+# Канал трансляций vk.video (постоянная ссылка, меняется вручную)
+VK_TRANSLATION = "https://vkvideo.ru/@club154907309/all"
+
 TIME_PAT = re.compile(r"(\d{1,3})'\s*(\d{2})''")
 SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*$")
 
@@ -28,6 +31,11 @@ MSK = timezone(timedelta(hours=3))
 
 # Заполняется в main: True, если наша команда — хозяева (первая в счёте)
 OUR_IS_HOME = True
+
+MONTHS_RU = ["января", "февраля", "марта", "апреля", "мая", "июня",
+             "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг",
+               "пятница", "суббота", "воскресенье"]
 
 def tg(method, **params):
     r = requests.post("https://api.telegram.org/bot" + TOKEN + "/" + method,
@@ -99,6 +107,37 @@ def parse_teams(md):
     if len(names) >= 2:
         return names[0], names[1]
     return "Хозяева", "Гости"
+
+def parse_location(md):
+    """Место проведения из страницы матча: 'Манеж Физра' и подобные."""
+    m = re.search(
+        r"(Манеж|Стадион|Арена|Спорткомплекс|ФОК)\s+"
+        r"([A-ZА-ЯЁA-Za-z0-9][\w\-]*(?:\s+[A-ZА-ЯЁA-Za-z0-9][\w\-]*)?)",
+        md)
+    if m:
+        return (m.group(1) + " " + m.group(2)).strip()
+    return "уточняется"
+
+def build_announcement(opponent, mdate, now):
+    """Анонс дня матча по утверждённому шаблону."""
+    if mdate:
+        y, mo, d = mdate
+        date_str = str(d) + " " + MONTHS_RU[mo - 1]
+        try:
+            wd = WEEKDAYS_RU[datetime(y, mo, d).weekday()]
+            date_str += ", " + wd
+        except Exception:
+            pass
+    else:
+        date_str = str(now.day) + " " + MONTHS_RU[now.month - 1]
+
+    return ("🔴 <b>FC ITPROVIDER — ДЕНЬ МАТЧА</b> 🔴\n\n"
+            "🆚 Соперник: «" + esc(opponent) + "»\n"
+            "🗓 Дата: " + date_str + "\n"
+            "⏱ Старт: " + format(START_H, "02d") + ":" + format(START_M, "02d") + " (МСК)\n"
+            "🗺 Локация: " + esc(LOCATION) + "\n\n"
+            "🔗 Трансляция: " + VK_TRANSLATION + "\n\n"
+            "Следите за обновлениями в этом чате.")
 
 def parse_html_events(html, team1, team2):
     """Тип события (гол/ЖК/КК) и сторона — из HTML-классов таймлайна."""
@@ -326,8 +365,9 @@ def find_our_match(cal_md, today):
     return pick["url"], pick["date"], pick["time"]
 
 def main():
-    global STATE_FILE, OUR_IS_HOME, START_H, START_M
+    global STATE_FILE, OUR_IS_HOME, START_H, START_M, LOCATION
     now = datetime.now(MSK)
+    LOCATION = "уточняется"
 
     if PAST_MATCH:
         match_url = MATCH_URL
@@ -376,6 +416,28 @@ def main():
     st = load_state()
     if PAST_MATCH:
         st = {"seen": [], "started": False, "final": False, "score": [0, 0]}
+
+    # Страховка: если state-файл пуст (первый запуск), заполняем ключи
+    st.setdefault("seen", [])
+    st.setdefault("started", False)
+    st.setdefault("final", False)
+    st.setdefault("score", [0, 0])
+
+    # ====== АНОНС ДНЯ МАТЧА (один раз, с 11:00 МСК до конца игры) ======
+    if not PAST_MATCH and not st.get("announced"):
+        announce_from = now.replace(hour=11, minute=0, second=0, microsecond=0)
+        match_start = now.replace(hour=START_H, minute=START_M,
+                                  second=0, microsecond=0)
+        if announce_from <= now < match_start + timedelta(minutes=DURATION_MIN):
+            opponent = team2 if OUR_IS_HOME else team1
+            LOCATION = parse_location(md)
+            post = build_announcement(opponent, mdate, now)
+            print("---- АНОНС ----")
+            print(post.replace("<b>", "").replace("</b>", ""))
+            print("---------------")
+            send(post)
+            st["announced"] = True
+            save_state(st)
 
     html_events = parse_html_events(html, team1, team2) if html else []
     md_events = parse_md_events(md)
