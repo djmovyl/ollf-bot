@@ -176,14 +176,6 @@ def build_announcement(opponent, mdate, time_str):
 
 # ================= СОСТАВЫ =================
 NAME_TOKEN = r"[А-ЯЁ][а-яё\-]+"
-# Номер перед именем: '1 Семёнов Александр'. Группы: 1-номер, 2-имя, 3-фамилия
-PAT_NUM_FIRST = re.compile(
-    r"(?<![\w.])(\d{1,2})[.\)]?\s+(?:$К$|ВР)?\s*"
-    r"(" + NAME_TOKEN + r")\s+(" + NAME_TOKEN + r")", re.IGNORECASE)
-# Номер после имени: 'Коротков Арсений 1'. Группы: 1-имя, 2-фамилия, 3-номер
-PAT_NUM_LAST = re.compile(
-    r"(" + NAME_TOKEN + r")\s+(" + NAME_TOKEN + r")"
-    r"[.,]?\s*(?:$К$|ВР)?\s*(\d{1,2})(?!\d)", re.IGNORECASE)
 
 # Слова, которые никогда не являются именами игроков
 JUNK_WORDS = ("кубок", "чемпионат", "лига", "турнир", "календарь",
@@ -194,15 +186,8 @@ def _is_junk_name(name):
     low = name.lower()
     return any(w in low for w in JUNK_WORDS)
 
-def _mark_around(line, start, span):
-    window = line[max(0, start - 12): start + span + 12].upper()
-    if "(К)" in window:
-        return "(К)"
-    if "ВР" in window:
-        return "ВР"
-    return ""
-
 def lineup_side_is_right(md, team1, team2):
+    """Запасной способ: наша колонка справа в таблице составов?"""
     up = md.upper()
     head_idx = up.find("СТАРТОВЫЕ СОСТАВЫ")
     if head_idx < 0:
@@ -218,120 +203,30 @@ def lineup_side_is_right(md, team1, team2):
     return not OUR_IS_HOME
 
 def parse_lineups(md, ours_is_right):
+    """Разбор раздела СТАРТОВЫЕ СОСТАВЫ.
+    Формат OLLF: игроки в ссылках на страницы игроков, у части —
+    фото-обёртка перед именем. Пометки ВР и (К) идут после фамилии.
+    Сторону определяем по заголовку команды над списком игроков."""
     up = md.upper()
     idx = up.find("СТАРТОВЫЕ СОСТАВЫ")
     if idx < 0:
         print("Раздел СОСТАВЫ не найден в этом тексте")
         return None
     zone = md[idx: idx + 8000]
-    left, right = [], []
 
-    for line in zone.splitlines()[1:]:
-        clean = line.replace("|", " ").strip()
-        if not clean or len(clean) > 400:
-            continue
-        found = []
-        for m in PAT_NUM_FIRST.finditer(clean):
-            name = (m.group(2) + " " + m.group(3)).strip()
-            if _is_junk_name(name):
-                continue
-            mark = _mark_around(clean, m.start(),
-                                len(name) + len(m.group(1)))
-            found.append(("L", m.start(), int(m.group(1)), name, mark))
-        for m in PAT_NUM_LAST.finditer(clean):
-            name = (m.group(1) + " " + m.group(2)).strip()
-            if _is_junk_name(name):
-                continue
-            mark = _mark_around(clean, m.start(),
-                                len(name) + len(m.group(3)))
-            found.append(("R", m.start(), int(m.group(3)), name, mark))
-        if not found:
-            continue
-        found.sort(key=lambda x: x[1])
-        for side, _, num, name, mark in found:
-            bucket = left if side == "L" else right
-            if (num, name) not in [(a, b) for a, b, _ in bucket]:
-                bucket.append((num, name, mark))
-
-    print("Состав LEFT :", left)
-    print("Состав RIGHT:", right)
-
-    ours = right if ours_is_right else left
-    if len(ours) >= 5:
-        return ours
-
-    # Не набралось — печатаем сырые строки раздела для подстройки
-    print("---- СЫРЫЕ СТРОКИ РАЗДЕЛА СОСТАВОВ (до 60) ----")
-    shown = 0
-    for line in zone.splitlines():
-        s = line.strip()
-        if not s:
-            continue
-        print("|", s[:160])
-        shown += 1
-        if shown >= 60:
-            break
-    print("---- КОНЕЦ СЫРЫХ СТРОК ----")
-    return None
-
-def dump_lineup_diagnostics(md):
-    up = md.upper()
-    idx = up.find("СТАРТОВЫЕ СОСТАВЫ")
-    if idx < 0:
-        idx = up.find("СОСТАВ")
-    zone = md[idx: idx + 4000] if idx >= 0 else md
-    shown = 0
-    for line in zone.splitlines():
-        s = line.strip()
-        if not s or shown >= 30:
-            break
-        if re.search(r"\d{1,2}[\s.]{1,3}[А-Яа-яЁё]", s) or "/player/" in s:
-            print("Строка состава? ", s[:120])
-            shown += 1
-
-def get_lineup_from_sources(match_url, md, ours_is_right):
-    """Пробуем состав на основной странице и во вкладках протокола/событий."""
-    sources = [("основная", md)]
-    for param in ("protocol", "events"):
-        tmd = jina(match_url + "?active=" + param)
-        if tmd:
-            sources.append(("?active=" + param, tmd))
-    for label, text in sources:
-        print("Пробуем состав из:", label)
-        players = parse_lineups(text, ours_is_right)
-        if players:
-            return players, label
-    return None, None
-
-def send_lineup(players):
-    lines = []
-    for num, name, mark in players:
-        s = "№" + str(num) + " " + name
-        if mark == "ВР":
-            s += " 🧤"
-        elif mark == "(К)":
-            s += " 🅺"
-        lines.append(esc(s))
-    send("📋 <b>Наш состав на сегодняшнюю игру</b>\n\n"
-         + "\n".join(lines) + "\n\nВ бой, ITPROVIDER! 💪")
-
-# ================= ТРАНСЛЯЦИЯ =================
-def find_stream_url(html, md):
-    for text in (html, md):
-        if not text:
-            continue
-        # 1) VK-плеер во врезке: video_ext.php?oid=..&id=..
-        for m in re.finditer(
-                r"https?://[^\s\"'<>()\\]*video_ext\.php[^\s\"'<>()\\]*",
-                text):
-            u = m.group(0).replace("&amp;", "&")
-            om = re.search(r"oid=(-?\d+)", u)
-            im = re.search(r"\bid=(\d+)", u)
-            if om and im:
-                return "https://vkvideo.ru/video" + om.group(1) + "_" + im.group(1)
-        # 2) прямые ссылки на видео или эфир VK
-        for m in re.finditer(
-                r"https?://[^\s\"'<>()\\]*(?:vkvideo\.ru|vk\.com|vk\.ru)"
+    # Игрок с фото:  * 1 [![Image ...](фото) Семёнов Александр ВР](ссылка)
+    PAT_P1 = re.compile(
+        r"\*\s+(\d{1,2})\s+
+$$
+!Image[^]*
+$$
+$[^)]*$\s*"
+        r"(" + NAME_TOKEN + r")\s+(" + NAME_TOKEN + r")\s*($К$|ВР)?\]"
+        r"
+$$
+\s*https://ollf\.ru/player/", re.IGNORECASE)    # Игрок без фото:  * 9 [Семёнов Николай](ссылка)    PAT_P2 = re.compile(        r"\*\s+(\d{1,2})\s+"        r"(" + NAME_TOKEN + r")\s+(" + NAME_TOKEN + r")\s*(К|ВР)?"        r"\s*https://ollf\.ru/player/", re.IGNORECASE)    # Заголовок команды в разделе составов    PAT_TEAM = re.compile(        r"([^!]+?)https://ollf\.ru/tournament/\d+/teams"        r"/application\?team_id=\d+", re.IGNORECASE)    sections = []  # [(имя команды, [(номер, имя, пометка), ...])]    current = None    for line in zone.splitlines():        tm = PAT_TEAM.search(line)        if tm:            current = tm.group(1).strip()            sections.append((current, []))            continue        pm = PAT_P1.search(line) or PAT_P2.search(line)        if pm and current is not None:            num = int(pm.group(1))            name = (pm.group(2) + " " + pm.group(3)).strip()            if _is_junk_name(name):                continue            mark = pm.group(4) or ""            if all(p[0] != num or p[1] != name for p in sections[-1][1]):                sections[-1][1].append((num, name, mark))    left = sections[0][1] if len(sections) > 0 else []    right = sections[1][1] if len(sections) > 1 else []    print("Команды в разделе:", [s[0] for s in sections])    print("Состав LEFT :", left)    print("Состав RIGHT:", right)    # Наша секция: та, где больше всего наших игроков    candidates = [plist for tname, plist in sections                  if OUR_KEY.upper() in tname.upper()]    if candidates:        ours = max(candidates, key=len)    else:        ours = right if ours_is_right else left    if len(ours) >= 5:        return ours    # Не набралось — печатаем сырые строки раздела для подстройки    print("---- СЫРЫЕ СТРОКИ РАЗДЕЛА СОСТАВОВ (до 60) ----")    shown = 0    for line in zone.splitlines():        s = line.strip()        if not s:            continue        print("|", s[:160])        shown += 1        if shown >= 60:            break    print("---- КОНЕЦ СЫРЫХ СТРОК ----")    return Nonedef dump_lineup_diagnostics(md):    up = md.upper()    idx = up.find("СТАРТОВЫЕ СОСТАВЫ")    if idx < 0:        idx = up.find("СОСТАВ")    zone = md[idx: idx + 4000] if idx >= 0 else md    shown = 0    for line in zone.splitlines():        s = line.strip()        if not s or shown >= 30:            break        if re.search(r"\d{1,2}[\s.]{1,3}[А-Яа-яЁё]", s) or "/player/" in s:            print("Строка состава? ", s[:120])            shown += 1def get_lineup_from_sources(match_url, md, ours_is_right):    """Пробуем состав на основной странице и во вкладках протокола/событий."""    sources = [("основная", md)]    for param in ("protocol", "events"):        tmd = jina(match_url + "?active=" + param)        if tmd:            sources.append(("?active=" + param, tmd))    for label, text in sources:        print("Пробуем состав из:", label)        players = parse_lineups(text, ours_is_right)        if players:            return players, label    return None, Nonedef send_lineup(players):    lines = []    for num, name, mark in players:        s = "№" + str(num) + " " + name        if mark == "ВР":            s += " 🧤"        elif mark == "(К)":            s += " 🅺"        lines.append(esc(s))    send("📋 <b>Наш состав на сегодняшнюю игру</b>\n\n"         + "\n".join(lines) + "\n\nВ бой, ITPROVIDER! 💪")# ================= ТРАНСЛЯЦИЯ =================def find_stream_url(html, md):    for text in (html, md):        if not text:            continue        # 1) VK-плеер во врезке: video_ext.php?oid=..&id=..        for m in re.finditer(                r"https?://[^\s\"'<>()\*video_ext\.php[^\s\"'<>()\*",                text):            u = m.group(0).replace("&amp;", "&")            om = re.search(r"oid=(-?\d+)", u)            im = re.search(r"\bid=(\d+)", u)            if om and im:                return "https://vkvideo.ru/video" + om.group(1) + "_" + im.group(1)        # 2) прямые ссылки на видео или эфир VK        for m in re.finditer(                r"https?://[^\s\"'<>()\
+$$
+*(?:vkvideo\.ru|vk\.com|vk\.ru)"
                 r"/(?:video|live)-?\d+_\d+[^\s\"'<>()\\]*", text):
             return m.group(0).replace("&amp;", "&")
     return None
