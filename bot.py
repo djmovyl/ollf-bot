@@ -423,12 +423,17 @@ def main():
     st.setdefault("final", False)
     st.setdefault("score", [0, 0])
 
-    # ====== АНОНС ДНЯ МАТЧА (один раз, с 11:00 МСК до конца игры) ======
-    if not PAST_MATCH and not st.get("announced"):
+    # ====== АНОНС ДНЯ МАТЧА (один раз в день, с 11:00 МСК) ======
+    if not PAST_MATCH:
+        today_key = now.strftime("%Y-%m-%d")
         announce_from = now.replace(hour=11, minute=0, second=0, microsecond=0)
         match_start = now.replace(hour=START_H, minute=START_M,
                                   second=0, microsecond=0)
-        if announce_from <= now < match_start + timedelta(minutes=DURATION_MIN):
+        match_end = match_start + timedelta(minutes=DURATION_MIN)
+        # окно: с 11:00 до конца матча;
+        # если матч начался раньше 11:00 — анонс уходит сразу после старта
+        in_window = now < match_end and (now >= announce_from or now >= match_start)
+        if in_window and st.get("announced") != today_key:
             opponent = team2 if OUR_IS_HOME else team1
             LOCATION = parse_location(md)
             post = build_announcement(opponent, mdate, now)
@@ -436,7 +441,7 @@ def main():
             print(post.replace("<b>", "").replace("</b>", ""))
             print("---------------")
             send(post)
-            st["announced"] = True
+            st["announced"] = today_key   # запоминаем ДАТУ, а не True
             save_state(st)
 
     html_events = parse_html_events(html, team1, team2) if html else []
