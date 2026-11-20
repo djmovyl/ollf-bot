@@ -1,7 +1,7 @@
 import os, re, time, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "2.7 (20.11.2026)"
+VERSION = "2.8 (20.11.2026)"
 
 # ===== НАСТРОЙКИ ТЕСТА =====
 # TEST_SEND = True  -> посты уходят в CHAT_ID (сейчас: тестовая группа)
@@ -19,38 +19,31 @@ WEEKDAYS_RU = ("понедельник вторник среда четверг 
                "пятница суббота воскресенье").split()
 MSK = timezone(timedelta(hours=3))
 MONTH_RE = "|".join(MONTHS_RU)
-WEEK_RE = "|".join(WEEKDAYS_RU)
 
-# Служебные константы: GL/GR — захватывающие группы, LP/RP —
-# литеральные скобки. В исходнике нет backslash-последовательностей,
-# чтобы код не портился при копировании из чата.
+# Константы для сборки регулярок, которые ломались при копировании
 BS = chr(92)
 LB = BS + "["
 RB = BS + "]"
 LP = BS + "("
 RP = BS + ")"
-D = BS + "d"
-S = BS + "s"
-GL = "("
-GR = ")"
 
-TIME_PAT = re.compile(GL + D + "{1,3}" + GR + "'" + S + "*"
-                      + GL + D + "{2}" + GR + "''")
-SCORE_END = re.compile(GL + D + "{1,2}" + GR + S + "*" + ":" + S + "*"
-                       + GL + D + "{1,2}" + GR + S + "*$")
-NAME = "[А-ЯЁ][а-яё-]+"
-NAME_RE = re.compile(NAME + S + "+" + NAME)
-IMG_MD = re.compile("!" + LB + "^" + RB + "*" + RB
-                    + LP + "^" + RP + "*" + RP)
+TIME_PAT = re.compile(r"(\d{1,3})'\s*(\d{2})''")
+SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*$")
+NAME = r"[А-ЯЁ][а-яё\-]+"
+NAME_RE = re.compile(NAME + r"\s+" + NAME)
+IMG_MD = re.compile(
+    "!" + LB + "[^" + RB + "]*" + RB + LP + "[^" + RP + "]*" + RP)
+# Паттерны состава — дословно из версии 2.5.1, где они находили
+# 10 игроков при том же размере протокола (22845 байт)
 PAT_P = re.compile(
-    "[*]" + S + "+" + GL + D + "{1,2}" + GR + S + "+" + LB + S + "*"
-    + GL + NAME + GR + S + "+" + GL + NAME + GR + S + "*"
-    + GL + LP + "К" + RP + GR + "?" + RB + LP + S + "*"
-    + "https://ollf" + BS + "." + "ru/player/", re.I)
+    r"\*\s+(\d{1,2})\s+" + LB + r"\s*"
+    + "(" + NAME + r")\s+(" + NAME + r")\s*"
+    + "(" + LP + "К" + RP + "|ВР)?"
+    + RB + LP + r"\s*https://ollf\.ru/player/", re.I)
 PAT_TEAM = re.compile(
-    LB + GL + "^" + LB + RB + "!" + RB + "+?" + GR + RB + LP
-    + "https://ollf" + BS + "." + "ru/tournament/" + D
-    + "+/teams/application" + BS + "?" + "team_id=" + D + "+", re.I)
+    LB + r"([^" + LB + RB + "!]+?)" + RB + LP
+    + r"https://ollf\.ru/tournament/\d+/teams/application\?team_id=\d+",
+    re.I)
 
 CARD_RED = ("кк", "красн", "🟥", "red card", "удал",
             "card-red", "card_red", "redcard")
@@ -62,11 +55,16 @@ JUNK = ("кубок", "чемпионат", "лига", "турнир", "кал�
         "сезон", "тур ", "оллф", "статистика", "таблица", "протокол",
         "события", "автогол")
 
+# Города, которые нельзя выдавать за локацию матча
+CITY_WORDS = ("нижнекамск", "казань", "альметьевск", "чебоксары",
+              "уфа", "нижний", "новгород", "набережные", "челны",
+              "москва", "татарстан")
+
+# Между месяцем и временем — всё, кроме двоеточия и перевода строки,
+# и нежадно: разделитель не может сожрать цифру из времени
 DT_LINE = re.compile(
-    GL + D + "{1,2}" + GR + S + "+" + GL + MONTH_RE + GR
-    + "[^" + BS + "n]{0,20}" + GL + D + "{1,2}" + ":" + D + "{2}" + GR)
-VENUE_WORDS = ("Тасма", "Манеж", "Стадион", "Арена", "Спорткомплекс",
-               "ФОК")
+    r"(\d{1,2})\s+(" + MONTH_RE + r")[^:\n]{0,30}?(\d{1,2}):(\d{2})",
+    re.I)
 
 
 def esc(s):
@@ -124,41 +122,43 @@ def strip_tags(html):
     return re.sub("<[^>]*>", " ", html)
 
 
-def loc_from_window(win):
-    """Локация из окна шапки: сначала текст после 📍,
-    потом известные слова со следующим за ними названием."""
+def loc_from_window(win, at):
+    """Локация из окна шапки. Перебираем все значки 📍 и берём
+    ближайший к найденной дате (с приоритетом тех, что после даты).
+    Токены-города пропускаем, из значка берём ровно одно слово."""
+    best = None
     i = win.find("📍")
-    if i >= 0:
+    while i >= 0:
         toks = []
         for w in win[i + 1:].split():
-            if w.isalpha():
-                toks.append(w)
+            t = w.strip(".,;:!?()[]")
+            if t.isalpha():
+                toks.append(t)
             elif toks:
                 break
-        if toks:
-            return " ".join(toks[:2])
-    for kw in VENUE_WORDS:
-        lines = win.splitlines()
-        for j, line in enumerate(lines):
+        if toks and toks[0].lower() not in CITY_WORDS:
+            dist = i - at if i >= at else (at - i) * 2
+            if best is None or dist < best[0]:
+                best = (dist, toks[0])
+        i = win.find("📍", i + 1)
+    if best:
+        return best[1]
+    # Запасной ход: известные названия площадок в окне
+    for kw in ("Тасма", "Манеж", "Стадион", "Арена", "ФОК",
+               "Спорткомплекс"):
+        for line in win.splitlines():
             if kw.lower() in line.lower():
-                toks = [w for w in line.split() if w.isalpha()]
-                if toks and len(toks) > 1 and kw.lower() not in (
-                        toks[0].lower() + toks[1].lower()):
-                    return toks[0] + " " + toks[1]
+                toks = [w for w in line.split()
+                        if w.isalpha() and w.lower() not in CITY_WORDS]
                 if toks:
-                    return " ".join(toks[:2])
-                if j + 1 < len(lines):
-                    nxt = [w for w in lines[j + 1].split() if w.isalpha()]
-                    if nxt:
-                        return nxt[0]
+                    return toks[0]
     return "уточняется"
 
 
 def extract_match_info(md, html, t1, t2):
     """Дата/время/локация со страницы матча.
     Формат: '15 ноября / воскресенье / 20:00'.
-    Из всех кандидатов выбирается тот, рядом с которым
-    встречаются имена обеих команд."""
+    Из кандидатов выбирается тот, рядом с которым обе команды."""
     texts = [md]
     if html:
         texts.append(strip_tags(html))
@@ -167,22 +167,25 @@ def extract_match_info(md, html, t1, t2):
         if not text:
             continue
         for m in DT_LINE.finditer(text):
-            win = text[max(0, m.start() - 600): m.end() + 600]
+            win_start = max(0, m.start() - 300)
+            win = text[win_start: m.end() + 600]
             score = 0
             for name in (t1, t2):
                 if any(p in win for p in name.split()):
                     score += 1
-            d = int(m.group(1))
-            mo = MONTHS_RU.index(m.group(2).lower()) + 1
-            cd = (datetime.now(MSK).year, mo, d)
-            hh, mm = m.group(3).split(":")
-            cands.append((score, -m.start(), cd, (int(hh), int(mm)), win))
+            cd = (datetime.now(MSK).year,
+                  MONTHS_RU.index(m.group(2).lower()) + 1,
+                  int(m.group(1)))
+            ct = (int(m.group(3)), int(m.group(4)))
+            cands.append((score, -m.start(), cd, ct,
+                          m.start() - win_start, win))
             print("Кандидат даты:", m.group(0), "| очки:", score)
     if cands:
         best = max(cands, key=lambda c: (c[0], c[1]))
-        loc = loc_from_window(best[4])
         print("Выбранная шапка:", best[2], best[3])
-        return best[2], best[3], loc
+        print("ОКНО ШАПКИ (для отладки):",
+              best[5][:300].replace("\n", " | "))
+        return best[2], best[3], loc_from_window(best[5], best[4])
     print("Строк с датой/временем не найдено")
     return None, None, "уточняется"
 
@@ -241,6 +244,19 @@ def get_lineup(proto):
         return []
     cand = [pl for t, pl in secs if OUR_KEY.upper() in t.upper()]
     return max(cand, key=len) if cand else []
+
+
+def dump_protocol(proto):
+    """Печатает сырые строки протокола — чтобы увидеть реальный
+    формат состава, если регулярка его не взяла."""
+    print("---- СЫРЫЕ СТРОКИ ПРОТОКОЛА (для отладки) ----")
+    idx = proto.upper().find("СОСТАВ")
+    start = max(0, idx - 200) if idx >= 0 else 0
+    zone = proto[start: start + 4500]
+    for line in zone.splitlines():
+        s = line.strip()
+        if s and ("[" in s or s.startswith("*") or s.isdigit()):
+            print("|", s[:200])
 
 
 def send_lineup(players):
@@ -417,14 +433,14 @@ def render_post(ev):
         if ev["ours"]:
             return ("🟡 <b>ЖЁЛТАЯ КАРТОЧКА у нас</b>\n\n🟡 " + p
                     + "\n⏱ На " + str(m) + "' минуте.")
-        return ("🟡 <b>Жёлтая карточка у соперника</b>\n\n🟡 " + p
-                + "\n⏱ На " + str(m) + "' минуте.")
+        return ("🟡 <b>Жёлтая карточка у соперника</b>\n\n⏱ На "
+                + str(m) + "' минуте.")
     if ev["et"] == "red":
         if ev["ours"]:
             return ("🚨 <b>КРАСНАЯ КАРТОЧКА — УДАЛЕНИЕ У НАС</b>\n\n🔴 "
                     + p + "\n⏱ На " + str(m) + "' минуте.")
-        return ("🚨 <b>КРАСНАЯ КАРТОЧКА У СОПЕРНИКА!</b>\n\n🔴 " + p
-                + "\n⏱ На " + str(m) + "' минуте.")
+        return ("🚨 <b>КРАСНАЯ КАРТОЧКА У СОПЕРНИКА!</b>\n\n⏱ На "
+                + str(m) + "' минуте.")
     return None
 
 
@@ -475,7 +491,8 @@ def main():
         print("ТЕСТ СОСТАВ — найдено", len(lineup), "игроков")
         send_lineup(lineup)
     else:
-        print("ТЕСТ СОСТАВ — не найден")
+        print("ТЕСТ СОСТАВ — не найден, сырой протокол:")
+        dump_protocol(proto)
 
     # --- ТРАНСЛЯЦИЯ (отдельным постом) ---
     try:
@@ -491,11 +508,7 @@ def main():
     # --- СОБЫТИЯ ---
     raw_evs = merge_events(md, proto)
     if not raw_evs:
-        print("События не распознаны. Сырой раздел События матча:")
-        idx = md.find("События матча")
-        for line in md[idx: idx + 1500].splitlines():
-            if line.strip():
-                print("|", line.strip()[:150])
+        print("События не распознаны")
         return
     our_names = set(n for _, n, _ in lineup)
     evs = []
