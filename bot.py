@@ -23,6 +23,7 @@ LB = BS + "["
 RB = BS + "]"
 LP = BS + "("
 RP = BS + ")"
+S = BS + "s"
 
 TIME_PAT = re.compile(r"(\d{1,3})'\s*(\d{2})''")
 SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*$")
