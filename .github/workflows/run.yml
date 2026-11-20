@@ -34,6 +34,8 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL: ${{ secrets.CHANNEL }}
+          TG_API_URL: ${{ secrets.TG_API_URL }}
+          TG_PROXY_SECRET: ${{ secrets.TG_PROXY_SECRET }}
 
       - name: Save bot state
         if: always()
