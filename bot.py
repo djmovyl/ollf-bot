@@ -119,28 +119,40 @@ def parse_location(md):
     return "уточняется"
 
 def parse_match_datetime_from_page(md, now):
-    """Дата ('22 ноября') и время ('15:20') со страницы матча.
-    Возвращает (date, time): date — (year, month, day), time — (hour, minute)."""
-    d, t = None, None
-    m = re.search(
-        r"(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|"
-        r"сентября|октября|ноября|декабря)", md, re.IGNORECASE)
-    if m:
+    """Дата и время со страницы матча.
+    На странице бывают даты прошлых туров, поэтому: собираем ВСЕ даты,
+    отбрасываем прошедшие, берём ближайшую будущую — это наш матч."""
+    today_ord = now.date().toordinal()
+    found = []
+    for m in re.finditer(
+            r"(\d{1,2})\s+(" + "|".join(MONTHS_RU) + r")", md, re.IGNORECASE):
         day = int(m.group(1))
         mo = MONTHS_RU.index(m.group(2).lower()) + 1
-        year = now.year
-        if (mo, day) < (now.month, now.day):
-            year += 1  # дата уже прошла в этом году — матч в следующем
         try:
-            datetime(year, mo, day)
-            d = (year, mo, day)
+            d_ = datetime(now.year, mo, day)
         except ValueError:
-            d = None
-        # время ищем сразу после даты — там, где оно стоит на странице
-        tm = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", md[m.end():m.end() + 200])
-        if tm:
-            t = (int(tm.group(1)), int(tm.group(2)))
-    return d, t
+            continue
+        if d_.date().toordinal() >= today_ord:
+            frag = md[max(0, m.start() - 40):m.end() + 60].replace("\n", " ")
+            found.append((d_.date().toordinal(), m.start(), m.end(),
+                          (now.year, mo, day), frag))
+        # прошедшие даты пропускаем: наш матч не может быть в прошлом
+    if not found:
+        print("Будущих дат на странице не найдено")
+        return None, None
+    found.sort()
+    for _, _, _, d_, frag in found[:5]:
+        print("Кандидат даты:", d_, "| фрагмент:", frag[:90])
+    _, _, e, d, _ = found[0]
+    # время ищем сразу после даты, запасной вариант — чуть раньше
+    tm = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", md[e:e + 200])
+    if tm:
+        return d, (int(tm.group(1)), int(tm.group(2)))
+    tm = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b",
+                   md[max(0, e - 150):e])
+    if tm:
+        return d, (int(tm.group(1)), int(tm.group(2)))
+    return d, None
 
 def build_announcement(opponent, mdate, time_str):
     """Анонс дня матча по утверждённому шаблону."""
@@ -370,6 +382,7 @@ def find_our_match(cal_md, today):
             y = today.year  # год в календаре не указан — берём текущий
         candidates.append({
             "url": url,
+            "line": s,
             "date": (y, mo, d) if (y and mo and d) else None,
             "time": (h, mm) if h is not None else None,
             "upcoming": "- : -" in s,
@@ -386,6 +399,7 @@ def find_our_match(cal_md, today):
         return "", None, None
     upcoming = [c for c in pool if c["upcoming"]]
     pick = (upcoming or pool)[0]
+    print("Строка календаря:", pick["line"][:200])
     return pick["url"], pick["date"], pick["time"]
 
 def main():
