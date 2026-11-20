@@ -42,6 +42,8 @@ jobs:
           CHANNEL: ${{ secrets.CHANNEL }}
           REPLAY_CHANNEL: ${{ secrets.REPLAY_CHANNEL }}
           REPLAY_RESET: ${{ inputs.reset }}
+          TG_API_URL: ${{ secrets.TG_API_URL }}
+          TG_PROXY_SECRET: ${{ secrets.TG_PROXY_SECRET }}
 
       - name: Save replay state
         if: always()
