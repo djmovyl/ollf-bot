@@ -238,6 +238,15 @@ def find_stream_url(texts):
 
 def get_stream(match_url, md):
     burl = match_url + "?active=broadcast"
+    for attempt in range(4):
+        bhtml = jina(burl, html=True)
+        bmd = jina(burl)
+        surl = find_stream_url([bhtml, bmd, md])
+        if surl:
+            return surl
+        print("Трансляция не найдена, попытка", attempt + 1, "из 4")
+        time.sleep(10)
+    return None
     return find_stream_url([jina(burl, html=True), jina(burl), md])
 
 
