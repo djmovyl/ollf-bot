@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.11 (20.11.2026)"
+VERSION = "bot-2.12 (20.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -594,7 +594,12 @@ def announcement(opponent, mdate, time_str, loc):
             "🗺 Локация: " + esc(loc) + "\n\n"
             "🔗 Трансляция: " + VK_TRANSLATION + "\n\n"
             "Следите за обновлениями в этом чате.")
-
+    
+def hour_reminder(opponent, time_str, loc):
+    return ("⏰ <b>Через час — ИГРА!</b>\n\n"
+            "🆚 Соперник: <b>«" + esc(opponent) + "»</b>\n\n"
+            "⏱ Начало в <b>" + time_str + "</b> (МСК)\n\n"
+            "📍 <b>" + esc(loc) + "</b>")
 
 def test_mode():
     """Тестовый прогон на сыгранном матче: только лог."""
@@ -738,6 +743,18 @@ def main():
         send(post)
         st["announced"] = tk
         save_state(st)
+    # Напоминание за час до матча: окно 60 ± 2,5 минуты,
+    # чтобы гарантированно попасть между пятиминутными прогонами
+    if time_known and st.get("hour1") != tk:
+        dt_min = (t0 - now).total_seconds() / 60
+        if 50 <= dt_min <= 62.5 and LOCATION != "уточняется":
+            post = hour_reminder(t2 if OUR_IS_HOME else t1,
+                                 TIME_STR, LOCATION)
+            print("---- НАПОМИНАНИЕ ЗА ЧАС ----")
+            print(post.replace("<b>", "").replace("</b>", ""))
+            send(post)
+            st["hour1"] = tk
+            save_state(st)
     if win and st.get("lineup") != tk and lineup:
         send_lineup(lineup)
         st["lineup"] = tk
