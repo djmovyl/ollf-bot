@@ -7,39 +7,43 @@ import traceback
 from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 
+# ================= НАСТРОЙКИ =================
 TOKEN = os.environ["BOT_TOKEN"]
 CHANNEL = os.environ["CHANNEL"]
 CALENDAR_URL = "https://ollf.ru/tournament/1067343/calendar"
 OUR_KEY = "ITPROVIDER"
 
-# ====== РЕЖИМ ТЕСТА НА ПРОШЕДШЕМ МАТЧЕ ======
-PAST_MATCH = False
-MATCH_URL = "https://ollf.ru/match/5905503"
+# РЕЖИМ ТЕСТА НА ПРОШЕДШЕМ МАТЧЕ
+# True  — тест на матче с Триумфом (только логи, без постов в канал).
+# False — боевой режим (для воскресенья).
+PAST_MATCH = True 
+MATCH_URL = "https://ollf.ru/match/5905514"  # Матч Триумф vs FC ITPROVIDER
 
-# Время и дата матча берутся из календаря и страницы матча автоматически.
-# Эти значения — только запасной вариант для расчёта конца матча.
-START_H, START_M = 18, 0
+# Резервные время и длительность, если парсинг даты не сработает
+START_H, START_M = 15, 20
 DURATION_MIN = 75
 
-# За сколько минут до старта начинать проверку состава и трансляции
-LINEUP_CHECK_BEFORE = 5
-
-# Канал трансляций vk.video (постоянная ссылка, меняется вручную)
+# Ссылка на постоянную трансляцию (если нет прямой ссылки на матч)
 VK_TRANSLATION = "https://vkvideo.ru/@club154907309/all"
 
+# Регулярки для парсинга времени и счёта
 TIME_PAT = re.compile(r"(\d{1,3})'\s*(\d{2})''")
-SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*$")
+SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*\$")
 
 MSK = timezone(timedelta(hours=3))
 
-# Заполняется в main: True, если наша команда — хозяева (первая в счёте)
+# Глобальные переменные, заполняются в main
 OUR_IS_HOME = True
+LOCATION = "уточняется"
+TIME_STR = "15:20"
+STATE_FILE = "bot_state.json"
 
 MONTHS_RU = ["января", "февраля", "марта", "апреля", "мая", "июня",
              "июля", "августа", "сентября", "октября", "ноября", "декабря"]
 WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг",
                "пятница", "суббота", "воскресенье"]
 
+# ================= TELEGRAM API =================
 def tg(method, **params):
     r = requests.post("https://api.telegram.org/bot" + TOKEN + "/" + method,
                       data=params, timeout=20)
@@ -49,19 +53,24 @@ def esc(s):
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 def send(text):
+    # Если в тестовом режиме - не отправляем
+    if PAST_MATCH:
+        print("[ТЕСТ] Сообщение НЕ отправлено в канал (режим теста):")
+        print(text)
+        return
+    
     res = tg("sendMessage", chat_id=CHANNEL, text=text[:3900],
              parse_mode="HTML")
     if not res.get("ok"):
         print("Telegram error:", res)
 
+# ================= JINA AI (PARSING) =================
 def jina(url, html=False):
     headers = {"X-Return-Format": "html"} if html else {}
     for attempt in range(4):
         try:
             r = requests.get("https://r.jina.ai/" + url,
                              headers=headers, timeout=90)
-            print("jina:", url, "html" if html else "md",
-                  "->", r.status_code, len(r.text))
             if r.status_code == 200 and r.text.strip():
                 return r.text
             time.sleep(15)
@@ -71,8 +80,7 @@ def jina(url, html=False):
     return ""
 
 def find_brackets(s):
-    """Содержимое всех квадратных скобок в строке (имена игроков и команд)."""
-    res = []
+    res = 
     i = 0
     while True:
         a = s.find("[", i)
@@ -85,8 +93,8 @@ def find_brackets(s):
         i = b + 1
     return res
 
+# ================= ДАТЫ И ВРЕМЯ =================
 def event_minute(time_str):
-    """Логика минут: 23' 01'' -> 24', 23' 00'' -> 23'."""
     m = TIME_PAT.search(time_str)
     if not m:
         return None
@@ -97,7 +105,7 @@ def event_minute(time_str):
 def parse_teams(md):
     idx = md.find("События матча")
     zone = md[:idx] if idx > 0 else md
-    names = []
+    names = 
     for line in zone.splitlines():
         if "teams/application?team_id=" not in line:
             continue
@@ -108,11 +116,10 @@ def parse_teams(md):
             if c not in names:
                 names.append(c)
     if len(names) >= 2:
-        return names[0], names[1]
+        return names, names
     return "Хозяева", "Гости"
 
 def parse_location(md):
-    """Место проведения из страницы матча: 'Манеж Физра' и подобные."""
     m = re.search(
         r"(Манеж|Стадион|Арена|Спорткомплекс|ФОК)\s+"
         r"([A-ZА-ЯЁA-Za-z0-9][\w\-]*(?:\s+[A-ZА-ЯЁA-Za-z0-9][\w\-]*)?)",
@@ -122,11 +129,8 @@ def parse_location(md):
     return "уточняется"
 
 def parse_match_datetime_from_page(md, now):
-    """Дата и время со страницы матча.
-    На странице бывают даты прошлых туров, поэтому: собираем ВСЕ даты,
-    отбрасываем прошедшие, берём ближайшую будущую — это наш матч."""
     today_ord = now.date().toordinal()
-    found = []
+    found = 
     for m in re.finditer(
             r"(\d{1,2})\s+(" + "|".join(MONTHS_RU) + r")", md, re.IGNORECASE):
         day = int(m.group(1))
@@ -139,26 +143,21 @@ def parse_match_datetime_from_page(md, now):
             frag = md[max(0, m.start() - 40):m.end() + 60].replace("\n", " ")
             found.append((d_.date().toordinal(), m.start(), m.end(),
                           (now.year, mo, day), frag))
-        # прошедшие даты пропускаем: наш матч не может быть в прошлом
     if not found:
-        print("Будущих дат на странице не найдено")
         return None, None
     found.sort()
     for _, _, _, d_, frag in found[:5]:
         print("Кандидат даты:", d_, "| фрагмент:", frag[:90])
-    _, _, e, d, _ = found[0]
-    # время ищем сразу после даты, запасной вариант — чуть раньше
-    tm = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", md[e:e + 200])
+    _, _, e, d, _ = found
+    tm = re.search(r"\b(?\d|2[0-3]):([0-5]\d)\b", md[e:e + 200])
     if tm:
         return d, (int(tm.group(1)), int(tm.group(2)))
-    tm = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b",
-                   md[max(0, e - 150):e])
+    tm = re.search(r"\b(?\d|2[0-3]):([0-5]\d)\b", md[max(0, e - 150):e])
     if tm:
         return d, (int(tm.group(1)), int(tm.group(2)))
     return d, None
 
 def build_announcement(opponent, mdate, time_str):
-    """Анонс дня матча по утверждённому шаблону."""
     if mdate:
         y, mo, d = mdate
         date_str = str(d) + " " + MONTHS_RU[mo - 1]
@@ -178,84 +177,116 @@ def build_announcement(opponent, mdate, time_str):
             "🔗 Трансляция: " + VK_TRANSLATION + "\n\n"
             "Следите за обновлениями в этом чате.")
 
-def parse_lineups(md):
-    """Ищет составы в протоколе: пары 'номер + имя'.
-    Понимает вид '5 Иванов Иван', '5. Иванов' и табличный '| 5 | Иванов |'.
-    Возвращает [(номер, имя), ...] или None, если игроков не хватает."""
-    players = []
-    for line in md.splitlines():
-        s = line.strip()
-        num, name = None, None
-        m = re.match(r"^(\d{1,2})[\.\)]?\s+([А-ЯЁ][\w\-]+(?:\s+[А-ЯЁ][\w\-]+)?)\s*$", s)
-        if m:
-            num, name = int(m.group(1)), m.group(2).strip()
-        elif "|" in s:
-            parts = [p.strip() for p in s.split("|")]
-            for i, p in enumerate(parts):
-                if re.fullmatch(r"\d{1,2}", p):
-                    for q in parts[i + 1:i + 3]:
-                        if re.fullmatch(r"[А-ЯЁ][\w\-]+(?:\s+[А-ЯЁ][\w\-]+)?", q):
-                            num, name = int(p), q
-                            break
-                    if num is not None:
-                        break
-        if num is not None and 0 < num < 100 and (num, name) not in players:
-            players.append((num, name))
-    if len(players) >= 5:
-        return players
+# ================= СОСТАВЫ =================
+NAME_TOKEN = r"[А-ЯЁ][а-яё\-]+"
+# Паттерн: Номер в начале строки/слова, потом имя
+PAT_NUM_FIRST = re.compile(
+    r"(?<![\w.])(\d{1,2})[.\)]?\s+(?:$К$|ВР)?\s*"
+    + NAME_TOKEN + r"\s+" + NAME_TOKEN)
+# Паттерн: Имя, потом номер в конце
+PAT_NUM_LAST = re.compile(
+    NAME_TOKEN + r"\s+" + NAME_TOKEN + r"[.,]?\s*(?:$К$|ВР)?\s*(\d{1,2})(?!\d)")
+
+def _mark_around(line, start, span):
+    window = line[max(0, start - 12): start + span + 12]
+    if "(К)" in window:
+        return "(К)"
+    if "ВР" in window:
+        return "ВР"
+    return ""
+
+def lineup_side_is_right(md, team1, team2):
+    idx = md.find("СТАРТОВЫЕ СОСТАВЫ")
+    if idx >= 0:
+        head = md[idx: idx + 600].upper()
+        p_ours = head.find(OUR_KEY.upper())
+        other = team2 if OUR_KEY.upper() in team1.upper() else team1
+        p_other = head.find(other.upper())
+        if p_ours >= 0 and p_other >= 0:
+            return p_ours > p_other
+    return not OUR_IS_HOME
+
+def parse_lineups(md, ours_is_right):
+    idx = md.find("СТАРТОВЫЕ СОСТАВЫ")
+    if idx < 0:
+        print("Раздел СТАРТОВЫЕ СОСТАВЫ не найден")
+        return None
+    zone = md[idx: idx + 8000]
+    left, right = , 
+
+    for line in zone.splitlines()[1:]:
+        clean = line.replace("|", " ").strip()
+        if not clean or len(clean) > 400:
+            continue
+        found = 
+        for m in PAT_NUM_FIRST.finditer(clean):
+            name = m.group(2) + " " + m.group(3)
+            mark = _mark_around(clean, m.start(), len(name) + len(m.group(1)))
+            found.append(("L", m.start(), int(m.group(1)), name, mark))
+        for m in PAT_NUM_LAST.finditer(clean):
+            name = m.group(1) + " " + m.group(2)
+            mark = _mark_around(clean, m.start(), len(name) + len(m.group(3)))
+            found.append(("R", m.start(), int(m.group(3)), name, mark))
+        if not found:
+            continue
+        found.sort(key=lambda x: x)
+        for side, _, num, name, mark in found:
+            bucket = left if side == "L" else right
+            if (num, name) not in [(a, b) for a, b, _ in bucket]:
+                bucket.append((num, name, mark))
+
+    print("Состав LEFT :", left)
+    print("Состав RIGHT:", right)
+
+    ours = right if ours_is_right else left
+    if len(ours) >= 5:
+        return ours
     return None
 
-def dump_lineup_diagnostics(md):
-    """Печатает в лог строки, похожие на состав, — для подстройки парсера."""
-    shown = 0
-    for line in md.splitlines():
-        s = line.strip()
-        if not s or shown >= 30:
-            break
-        if re.search(r"\d{1,2}\s*[\.\)]?\s*[А-ЯЁ]", s) or "/player/" in s:
-            print("Строка состава? ", s[:120])
-            shown += 1
-
 def send_lineup(players):
-    lines = "\n".join("№" + str(n) + " " + esc(name) for n, name in players)
-    send("📋 <b>Наш состав на сегодняшнюю игру</b>\n\n" + lines
-         + "\n\nВ бой, ITPROVIDER! 💪")
+    lines = 
+    for num, name, mark in players:
+        s = f"№{num} {name}"
+        
+        if mark == "ВР":
+            s += " 🧤"  # Перчатки
+        elif mark == "(К)":
+            s += " 🅺"  # Буква К в стиле эмодзи
+        
+        lines.append(esc(s))
+    
+    msg = ("📋 <b>Наш состав на сегодняшнюю игру</b>\n\n"
+           + "\n".join(lines) + "\n\nВ бой, ITPROVIDER! 💪")
+    send(msg)
 
+# ================= ТРАНСЛЯЦИЯ =================
 def find_stream_url(html, md):
-    """Ищем конкретную ссылку на трансляцию этой игры в HTML и MD страницы."""
     for text in (html, md):
         if not text:
             continue
-        # 1) VK-плеер во врезке: video_ext.php?oid=..&id=..
-        for m in re.finditer(r"https?://[^\s\"'<>()\\]*video_ext\.php[^\s\"'<>()\\]*",
-                             text):
+        # Ищем ссылки вида video_ext.php?oid=...&id=...
+        for m in re.finditer(
+                r"https?://[^\s\"'<>()\\]*video_ext\.php[^\s\"'<>()\\]*", text):
             u = m.group(0).replace("&amp;", "&")
             om = re.search(r"oid=(-?\d+)", u)
             im = re.search(r"\bid=(\d+)", u)
             if om and im:
                 return "https://vkvideo.ru/video" + om.group(1) + "_" + im.group(2)
-        # 2) прямые ссылки на видео или эфир VK
+        # Ищем прямые ссылки VK Video
         for m in re.finditer(
                 r"https?://[^\s\"'<>()\\]*(?:vkvideo\.ru|vk\.com|vk\.ru)"
                 r"/(?:video|live)-?\d+_\d+[^\s\"'<>()\\]*", text):
             return m.group(0).replace("&amp;", "&")
-    # Ничего не нашли — печатаем все VK-ссылки на странице для диагностики
-    for text in (html, md):
-        if not text:
-            continue
-        for m in re.finditer(
-                r"https?://[^\s\"'<>()\\]*(?:vkvideo\.ru|vk\.com|vk\.ru)"
-                r"[^\s\"'<>()\\]*", text):
-            print("VK-ссылка на странице:", m.group(0)[:120])
-    print("VK-ссылок на трансляцию на странице не найдено")
+    
+    # Если ничего не нашли, возвращаем заглушку
     return None
 
+# ================= СОБЫТИЯ МАТЧА =================
 def parse_html_events(html, team1, team2):
-    """Тип события (гол/ЖК/КК) и сторона — из HTML-классов таймлайна."""
     soup = BeautifulSoup(html, "html.parser")
-    events = []
+    events = 
     for el in soup.select(".game-timeline__event"):
-        cls = el.get("class", [])
+        cls = el.get("class", )
         if "yellow-card" in cls:
             etype = "yellow"
         elif "red-card" in cls:
@@ -283,8 +314,7 @@ def parse_html_events(html, team1, team2):
     return events
 
 def parse_md_events(md):
-    """Голы и счёт — из протокола: счёт меняется только в строках с голом."""
-    events = []
+    events = 
     score = [0, 0]
     for raw in md.splitlines():
         s = raw.strip()
@@ -300,9 +330,9 @@ def parse_md_events(md):
         if ms:
             new_h = int(ms.group(1))
             new_a = int(ms.group(2))
-            if new_h > score[0]:
+            if new_h > score:
                 scoring = "home"
-            elif new_a > score[1]:
+            elif new_a > score:
                 scoring = "away"
             score = [new_h, new_a]
         events.append({"minute": minute, "players": players,
@@ -310,10 +340,10 @@ def parse_md_events(md):
     return events
 
 def merge_events(md_events, html_events):
-    merged = []
+    merged = 
     pool = list(html_events)
     for e in md_events:
-        p0 = e["players"][0] if e["players"] else ""
+        p0 = e["players"] if e["players"] else ""
         match = None
         for he in pool:
             if he["minute"] == e["minute"] and he["player"] == p0:
@@ -331,7 +361,7 @@ def merge_events(md_events, html_events):
             assist = match["assist"]
             player = match["player"]
         else:
-            assist = e["players"][1] if len(e["players"]) > 1 else None
+            assist = e["players"] if len(e["players"]) > 1 else None
             player = p0 or "?"
             if e["scoring"]:
                 etype = "goal"
@@ -351,13 +381,11 @@ def merge_events(md_events, html_events):
     return merged
 
 def score_text_for(sc):
-    """Текст счёта с учётом того, хозяева мы или гости.
-    sc — счёт [хозяева, гости]."""
     if OUR_IS_HOME:
-        our, opp = sc[0], sc[1]
+        our, opp = sc, sc
     else:
-        our, opp = sc[1], sc[0]
-    shown = str(sc[0]) + " : " + str(sc[1])
+        our, opp = sc, sc
+    shown = str(sc) + " : " + str(sc)
     if our > opp:
         return "Счёт: <b>" + shown + "</b> в нашу пользу! 🎉"
     if our < opp:
@@ -401,20 +429,8 @@ def render_post(ev):
                 "⏱ На " + str(m) + "' минуте.")
     return None
 
-def load_state():
-    try:
-        with open(STATE_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-def save_state(s):
-    with open(STATE_FILE, "w") as f:
-        json.dump(s, f)
-
+# ================= КАЛЕНДАРЬ И ПОИСК МАТЧА =================
 def parse_date_from_line(s):
-    """Дата из строки календаря: '22.11.2026' или '22.11'.
-    Возвращает (year, month, day); год может быть None."""
     m = re.search(r"\b(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?\b", s)
     if not m:
         return None, None, None
@@ -426,7 +442,6 @@ def parse_date_from_line(s):
     return y, mo, d
 
 def parse_time_from_line(s):
-    """Время из строки календаря: '15:20', '9:30'. Возвращает (h, mm) или (None, None)."""
     m = re.search(r"\b(\d{1,2}):(\d{2})\b", s)
     if not m:
         return None, None
@@ -437,12 +452,7 @@ def parse_time_from_line(s):
     return None, None
 
 def find_our_match(cal_md, today):
-    """Ищем наш матч в календаре.
-    Возвращает (url, date, time):
-      date — (year, month, day) или None,
-      time — (hour, minute) или None.
-    Приоритет: матч с '- : -' (ещё не сыгран/идёт), затем остальные наши."""
-    candidates = []
+    candidates = 
     for raw in cal_md.splitlines():
         s = raw.strip()
         if OUR_KEY not in s or "ollf.ru/match/" not in s:
@@ -454,7 +464,7 @@ def find_our_match(cal_md, today):
         y, mo, d = parse_date_from_line(s)
         h, mm = parse_time_from_line(s)
         if y is None and mo is not None:
-            y = today.year  # год в календаре не указан — берём текущий
+            y = today.year
         candidates.append({
             "url": url,
             "line": s,
@@ -464,215 +474,104 @@ def find_our_match(cal_md, today):
         })
     if not candidates:
         return "", None, None
-    # Сначала матчи, у которых дата совпадает с сегодняшней
     today_key = (today.year, today.month, today.day)
     pool = [c for c in candidates if c["date"] == today_key]
     if not pool:
-        # Если даты не разобрались ни у кого — берём как есть
         pool = [c for c in candidates if c["date"] is None]
     if not pool:
         return "", None, None
     upcoming = [c for c in pool if c["upcoming"]]
-    pick = (upcoming or pool)[0]
+    pick = (upcoming or pool)
     print("Строка календаря:", pick["line"][:200])
     return pick["url"], pick["date"], pick["time"]
 
+# ================= MAIN =================
 def main():
-    global STATE_FILE, OUR_IS_HOME, START_H, START_M, LOCATION, TIME_STR
+    global OUR_IS_HOME, START_H, START_M, LOCATION, TIME_STR, STATE_FILE
     now = datetime.now(MSK)
-    LOCATION = "уточняется"
-    TIME_STR = format(START_H, "02d") + ":" + format(START_M, "02d")
-    mdate, mtime = None, None
+    
+    # Настройка файла состояния
+    if PAST_MATCH:
+        STATE_FILE = "test_state.json"
+        START_H, START_M = 15, 20
+        TIME_STR = "15:20"
+    else:
+        STATE_FILE = "bot_state.json"
+
+    match_url, mdate, mtime = None, None, None
 
     if PAST_MATCH:
         match_url = MATCH_URL
-        START_H, START_M = 15, 20
-        TIME_STR = "15:20"
-        STATE_FILE = "test_state.json"
     else:
         cal = jina(CALENDAR_URL)
         if not cal:
             send("🧪 Диагностика: календарь не скачался")
             return
-
         match_url, mdate, mtime = find_our_match(cal, now.date())
         if not match_url:
             print("Наш матч на сегодня не найден — выходим")
             return
 
-        # Если дата в календаре есть — сразу отсекаем чужие дни.
-        # Если нет — решим по странице матча после скачивания.
-        if mdate and mdate != (now.year, now.month, now.day):
-            print("Наш матч не сегодня:", mdate, "— выходим")
-            return
-
-        STATE_FILE = "prod_state.json"
-
+    # Парсинг страницы матча
+    print("Загружаем страницу матча:", match_url)
     md = jina(match_url)
-    if not md:
-        send("🧪 Диагностика: страница матча не скачалась (md пустой)")
-        return
-    time.sleep(5)
     html = jina(match_url, html=True)
-
-    # Дата и время со страницы матча — надёжнее календаря
-    page_date, page_time = parse_match_datetime_from_page(md, now)
-    if mdate is None:
-        mdate = page_date
-    if mtime is None:
-        mtime = page_time
-
-    if not PAST_MATCH:
-        if mdate is None:
-            print("Дата матча не распознана — анонс не отправляем, выходим")
-            return
-        if mdate != (now.year, now.month, now.day):
-            print("Наш матч не сегодня:", mdate, "— выходим")
-            return
-
-        if mtime:
-            START_H, START_M = mtime
-            TIME_STR = format(START_H, "02d") + ":" + format(START_M, "02d")
-        else:
-            START_H, START_M = 18, 0
-            TIME_STR = "уточняется"
-            print("Время не распознано — в анонсе напишем 'уточняется'")
-
-    team1, team2 = parse_teams(md)
-    if OUR_KEY not in team1.upper() and OUR_KEY not in team2.upper():
-        print("Это не наш матч:", team1, team2)
+    
+    if not md:
+        print("Не удалось получить Markdown версию страницы")
         return
 
-    # Ключевое: определяем, хозяева мы или гости
-    OUR_IS_HOME = OUR_KEY in team1.upper()
+    # Определение хозяев/гостей
+    t1, t2 = parse_teams(md)
+    print("Команды:", t1, "vs", t2)
+    OUR_IS_HOME = OUR_KEY.upper() in t1.upper()
+    print("Мы хозяева?", OUR_IS_HOME)
 
-    st = load_state()
-    if PAST_MATCH:
-        st = {"seen": [], "started": False, "final": False, "score": [0, 0]}
+    # Определение даты и времени
+    if mdate and mtime:
+        START_H, START_M = mtime
+        TIME_STR = f"{START_H:02d}:{START_M:02d}"
+    else:
+        # Попытка вытащить из самой страницы матча, если в календаре пусто
+        pd, pt = parse_match_datetime_from_page(md, now)
+        if pd and pt:
+            START_H, START_M = pt
+            TIME_STR = f"{START_H:02d}:{START_M:02d}"
 
-    # Страховка: если state-файл пуст (первый запуск), заполняем ключи
-    st.setdefault("seen", [])
-    st.setdefault("started", False)
-    st.setdefault("final", False)
-    st.setdefault("score", [0, 0])
+    # Определение локации
+    LOCATION = parse_location(md)
+    print("Локация:", LOCATION)
 
-    today_key = now.strftime("%Y-%m-%d")
+    # Проверка состава
+    ours_is_right = lineup_side_is_right(md, t1, t2)
+    players = parse_lineups(md, ours_is_right)
+    
+    if players:
+        print("Состав успешно распарсен! Отправляем (или логируем в тесте)...")
+        send_lineup(players)
+    else:
+        print("Состав не найден или слишком короткий (<5 игроков).")
 
-    # Сброс флагов при новом матче: state живёт неделями,
-    # поэтому 'seen'/'started'/'final' вчерашнего матча мешали бы новому
-    if not PAST_MATCH and st.get("match_date") != today_key:
-        st["seen"] = []
-        st["started"] = False
-        st["final"] = False
-        st["score"] = [0, 0]
-        st["match_date"] = today_key
-        st.pop("lineup", None)
-        st.pop("stream", None)
-        save_state(st)
+    # Проверка трансляции
+    stream_url = find_stream_url(html, md)
+    if stream_url:
+        print("Ссылка на трансляцию найдена:", stream_url)
+        # Здесь можно добавить логику отправки ссылки, если нужно
+    else:
+        print("Ссылка на трансляцию не найдена на странице.")
 
-    match_start_dt = now.replace(hour=START_H, minute=START_M,
-                                 second=0, microsecond=0)
-    match_end_dt = match_start_dt + timedelta(minutes=DURATION_MIN)
-
-    # ====== АНОНС ДНЯ МАТЧА (один раз в день, с 11:00 МСК) ======
-    if not PAST_MATCH:
-        announce_from = now.replace(hour=11, minute=0, second=0, microsecond=0)
-        # окно: с 11:00 до конца матча;
-        # если матч начался раньше 11:00 — анонс уходит сразу после старта
-        in_window = now < match_end_dt and (now >= announce_from
-                                            or now >= match_start_dt)
-        if in_window and st.get("announced") != today_key:
-            opponent = team2 if OUR_IS_HOME else team1
-            LOCATION = parse_location(md)
-            post = build_announcement(opponent, mdate, TIME_STR)
-            print("---- АНОНС ----")
-            print(post.replace("<b>", "").replace("</b>", ""))
-            print("---------------")
-            send(post)
-            st["announced"] = today_key   # запоминаем ДАТУ, а не True
-            save_state(st)
-
-    # ====== СОСТАВ НА ИГРУ (со 'старт - 5 минут') ======
-    if not PAST_MATCH:
-        check_from = match_start_dt - timedelta(minutes=LINEUP_CHECK_BEFORE)
-        if (check_from <= now <= match_start_dt + timedelta(minutes=10)
-                and st.get("lineup") != today_key):
-            players = parse_lineups(md)
-            if players:
-                print("Состав найден:", players)
-                send_lineup(players)
-                st["lineup"] = today_key
-                save_state(st)
-            else:
-                dump_lineup_diagnostics(md)
-
-    # ====== ССЫЛКА НА ТРАНСЛЯЦИЮ (со 'старт - 5 минут') ======
-    if not PAST_MATCH:
-        if (match_start_dt - timedelta(minutes=LINEUP_CHECK_BEFORE) <= now
-                < match_end_dt
-                and st.get("stream") != today_key):
-            surl = find_stream_url(html, md)
-            if surl:
-                print("Найдена трансляция:", surl)
-                send("📺 <b>А вот и ссылка на игру!</b>\n\n" + surl)
-                st["stream"] = today_key
-                save_state(st)
-
-    html_events = parse_html_events(html, team1, team2) if html else []
-    md_events = parse_md_events(md)
-    events = merge_events(md_events, html_events)
-
-    if events and not st.get("started"):
-        st["started"] = True
-        save_state(st)
-        send("🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n"
-             "🆚 <b>" + team1 + " vs " + team2 + "</b>\n\n"
-             "Держим кулаки за команду! 👊")
-
-    last_score = st.get("score", [0, 0])
-    for ev in events:
-        eid = str(ev["minute"]) + "-" + ev["type"] + "-" + ev["player"]
-        if eid in st["seen"]:
-            continue
-        if ev["type"] != "unknown":
-            post = render_post(ev)
-            if post:
-                time.sleep(2)
-                send(post)
-        if ev["type"] == "goal":
-            last_score = ev["score"]
-        st["seen"].append(eid)
-
-    st["score"] = last_score
-    save_state(st)
-
-    # Финальный пост: сравниваем НАШИ голы с голами соперника
-    if now > match_end_dt and st.get("started") and not st.get("final"):
-        st["final"] = True
-        save_state(st)
-        sc = st["score"]
-        if OUR_IS_HOME:
-            our, opp = sc[0], sc[1]
-        else:
-            our, opp = sc[1], sc[0]
-
-        if our > opp:
-            verdict = "🎉 <b>ПОБЕДА!</b> 🎉"
-        elif our < opp:
-            verdict = "😔 <b>ПОРАЖЕНИЕ</b> 😔"
-        else:
-            verdict = "🤝 <b>НИЧЬЯ</b> 🤝"
-
-        send("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n"
-             "📊 Итоговый счёт: <b>" + str(sc[0]) + " : " + str(sc[1])
-             + "</b>\n\n"
-             + verdict + "\n\n"
-             "Спасибо за игру, команда! 🤝")
+    # Сохранение состояния (для будущих итераций)
+    state = {
+        "last_check": now.isoformat(),
+        "match_url": match_url,
+        "location": LOCATION,
+        "time": TIME_STR
+    }
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except Exception as e:
+        print("Ошибка сохранения состояния:", e)
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        send("🚨 Ошибка:\n<pre>"
-             + esc(traceback.format_exc()[-2500:]) + "</pre>")
-        raise
+    main()
