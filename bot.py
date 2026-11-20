@@ -1,6 +1,8 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
+VERSION = "bot-2.10 (20.11.2026)"
+
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
 CALENDAR_URL = "https://ollf.ru/tournament/1067343/calendar"
@@ -21,10 +23,6 @@ LB = BS + "["
 RB = BS + "]"
 LP = BS + "("
 RP = BS + ")"
-D = BS + "d"
-S = BS + "s"
-GL = "("
-GR = ")"
 
 TIME_PAT = re.compile(r"(\d{1,3})'\s*(\d{2})''")
 SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*$")
@@ -64,15 +62,18 @@ CITY_WORDS = ("нижнекамск", "казань", "альметьевск", 
               "москва", "татарстан", "чемпионат", "лига", "турнир",
               "матч", "соперник", "емпионат")
 
-# Между месяцем и временем — всё, кроме двоеточия и перевода строки,
-# и нежадно: разделитель не может съесть цифру из времени
+# Шапка матч-дня: '15 ноября / воскресенье / 20:00'.
+# Разделитель нежадный и без двоеточия — не съедает цифру из времени
 DT_LINE = re.compile(
     r"(\d{1,2})\s+(" + MONTH_RE + r")[^:\n]{0,30}?(\d{1,2}):(\d{2})",
     re.I)
+# Числовой фолбэк: '22.11.2026' и рядом '18:00'
+NUM_DATE = re.compile(r"\b(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?\b")
+TIME_ONLY = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b")
 
 OUR_IS_HOME = True
 LOCATION = "уточняется"
-TIME_STR = "18:00"
+TIME_STR = "уточняется"
 
 
 def tg(method, **p):
@@ -184,9 +185,7 @@ def find_location(texts, date_positions):
 
 
 def extract_match_info(md, html, t1, t2):
-    """Дата/время/локация со страницы матча.
-    Формат: '15 ноября / воскресенье / 20:00'.
-    Из кандидатов выбирается тот, рядом с которым обе команды."""
+    """Дата/время/локация со страницы матча (шапка матч-дня)."""
     texts = [md]
     if html:
         texts.append(strip_tags(html))
@@ -217,6 +216,29 @@ def extract_match_info(md, html, t1, t2):
     return None, None, "уточняется"
 
 
+def page_datetime(md, html, t1, t2):
+    """Числовой фолбэк: '22.11.2026' и рядом '18:00' —
+    для страницы предстоящего матча, где шапки матч-дня ещё нет."""
+    texts = [md] + ([strip_tags(html)] if html else [])
+    for text in texts:
+        if not text:
+            continue
+        for m in NUM_DATE.finditer(text):
+            win = text[max(0, m.start() - 400): m.end() + 500]
+            if not any(p in win for p in t1.split()) \
+                    and not any(p in win for p in t2.split()):
+                continue
+            tm = TIME_ONLY.search(win)
+            if not tm:
+                continue
+            d, mo = int(m.group(1)), int(m.group(2))
+            y = int(m.group(3)) if m.group(3) else datetime.now(MSK).year
+            print("Числовой кандидат на странице:",
+                  m.group(0), tm.group(0))
+            return (y, mo, d), (int(tm.group(1)), int(tm.group(2)))
+    return None, None
+
+
 def parse_teams(md):
     idx = md.find("События матча")
     zone = md[:idx] if idx > 0 else md
@@ -239,6 +261,11 @@ def is_junk(name):
     return any(w in low for w in JUNK)
 
 
+# Маркеры конца зоны составов — за ними идёт футер/боковая панель
+LINEUP_STOP = ("распечатать протокол", "турнирная таблица",
+               "о турнире", "календарь")
+
+
 def parse_lineups(md):
     idx = md.upper().find("СТАРТОВЫЕ СОСТАВЫ")
     if idx < 0:
@@ -247,6 +274,9 @@ def parse_lineups(md):
     cur = None
     for raw in md[idx: idx + 8000].splitlines():
         line = IMG_MD.sub(" ", raw)
+        low = line.lower()
+        if any(k in low for k in LINEUP_STOP):
+            break
         m = PAT_TEAM.search(line)
         if m:
             cur = m.group(1).strip()
@@ -272,7 +302,7 @@ def our_lineup(md, proto):
         secs = parse_lineups(text)
         if not secs:
             continue
-        print("Составы из", label, ":", [s[0] for s in secs])
+        print("Составы из", label, ":", [s[0] for s in secs][:8], "...")
         cand = [pl for t, pl in secs if OUR_KEY.upper() in t.upper()]
         if cand:
             best = max(cand, key=len)
@@ -504,20 +534,27 @@ def line_date(s, today):
 
 
 def find_our_match(cal_md, today):
+    """Ищем наш матч в календаре. Дата и время могут лежать не в самой
+    строке с командой, а в соседних ячейках таблицы — поэтому берём
+    контекст из 2 строк выше и 2 ниже."""
     cands = []
-    for raw in cal_md.splitlines():
+    lines = cal_md.splitlines()
+    for i, raw in enumerate(lines):
         s = raw.strip()
         if OUR_KEY not in s or "ollf.ru/match/" not in s:
             continue
         m = re.search(r"match/(\d+)", s)
         if not m:
             continue
-        tm = re.search(r"\b(\d{1,2}):(\d{2})\b", s)
+        ctx = " | ".join(x.strip() for x in
+                         lines[max(0, i - 2): i + 3] if x.strip())
+        tm = re.search(r"\b(\d{1,2}):(\d{2})\b", ctx)
         cands.append({"url": "https://ollf.ru/match/" + m.group(1),
-                      "line": s, "date": line_date(s, today),
+                      "line": s, "context": ctx,
+                      "date": line_date(ctx, today),
                       "time": (int(tm.group(1)), int(tm.group(2)))
                               if tm else None,
-                      "upcoming": "- : -" in s})
+                      "upcoming": "- : -" in ctx})
     if not cands:
         return "", None, None
     tk = (today.year, today.month, today.day)
@@ -526,8 +563,25 @@ def find_our_match(cal_md, today):
     if not pool:
         return "", None, None
     pick = ([c for c in pool if c["upcoming"]] or pool)[0]
-    print("Строка календаря:", pick["line"][:200])
+    print("Строка календаря:", pick["line"][:500])
+    print("Контекст строки:", pick["context"][:500])
+    print("Дата из календаря:", pick["date"], "| время:", pick["time"])
     return pick["url"], pick["date"], pick["time"]
+
+
+def announcement(opponent, mdate, time_str, loc):
+    ds = "уточняется"
+    if mdate:
+        y, mo, d = mdate
+        ds = str(d) + " " + MONTHS_RU[mo - 1] + ", "
+        ds += WEEKDAYS_RU[datetime(y, mo, d).weekday()]
+    return ("🔴 <b>FC ITPROVIDER — ДЕНЬ МАТЧА</b> 🔴\n\n"
+            "🆚 Соперник: «" + esc(opponent) + "»\n"
+            "🗓 Дата: " + ds + "\n"
+            "⏱ Старт: " + time_str + " (МСК)\n"
+            "🗺 Локация: " + esc(loc) + "\n\n"
+            "🔗 Трансляция: " + VK_TRANSLATION + "\n\n"
+            "Следите за обновлениями в этом чате.")
 
 
 def test_mode():
@@ -538,8 +592,7 @@ def test_mode():
         return
     html = jina(MATCH_URL, html=True)
     t1, t2 = parse_teams(md)
-    OUR_IS_HOME = OUR_KEY in t1.upper()
-    print("Команды:", t1, "vs", t2, "| Мы хозяева:", OUR_IS_HOME)
+    print("Команды:", t1, "vs", t2)
     try:
         mdate, mtime, loc = extract_match_info(md, html, t1, t2)
         print("Шапка матча: дата", mdate, "| время", mtime,
@@ -551,15 +604,8 @@ def test_mode():
     lineup = our_lineup(md, proto)
     if lineup:
         print("ТЕСТ СОСТАВ — найдено", len(lineup), "игроков")
-        send_lineup(lineup)
     else:
         print("ТЕСТ СОСТАВ — не найден")
-    try:
-        print("ТЕСТ ТРАНСЛЯЦИЯ:",
-              get_stream(MATCH_URL, md) or "не найдена")
-    except Exception:
-        print("Ошибка блока трансляции (продолжаем):")
-        print(traceback.format_exc())
     for e in merge_events(md, proto):
         print("СОБЫТИЕ:", e["et"], str(e["minute"]) + "'",
               e["players"], e["score"])
@@ -567,6 +613,7 @@ def test_mode():
 
 def main():
     global OUR_IS_HOME, START_H, START_M, TIME_STR
+    print("ВЕРСИЯ КОДА:", VERSION)
     now = datetime.now(MSK)
     if PAST_MATCH:
         test_mode()
@@ -594,7 +641,8 @@ def main():
     OUR_IS_HOME = OUR_KEY in t1.upper()
     print("Команды:", t1, "vs", t2, "| Мы хозяева:", OUR_IS_HOME)
 
-    # Шапка: время из календаря, фолбэк со страницы; локация со страницы
+    # Шапка: время из календаря, фолбэк со страницы (словесный,
+    # затем числовой); локация со страницы
     page_date = page_time = None
     try:
         page_date, page_time, LOCATION = extract_match_info(md, html,
@@ -602,6 +650,15 @@ def main():
     except Exception:
         print("Ошибка разбора шапки (продолжаем):")
         print(traceback.format_exc())
+    if page_time is None:
+        try:
+            n_date, n_time = page_datetime(md, html, t1, t2)
+            if n_time:
+                page_time = n_time
+                page_date = page_date or n_date
+        except Exception:
+            print("Ошибка числового фолбэка (продолжаем):")
+            print(traceback.format_exc())
     if mtime:
         START_H, START_M = mtime
         TIME_STR = format(START_H, "02d") + ":" + format(START_M, "02d")
@@ -630,10 +687,22 @@ def main():
         print("Матч уже закрыт в состоянии — выходим")
         return
 
-    t0 = now.replace(hour=START_H, minute=START_M,
-                     second=0, microsecond=0)
-    tend = t0 + timedelta(minutes=DURATION_MIN)
-    win = t0 - timedelta(minutes=LINEUP_CHECK_BEFORE) <= now < tend
+    # Окна. Если время матча неизвестно: анонс/состав/трансляция —
+    # с 11:00 до вечера; итог — не раньше, чем через 85 минут после
+    # первого события (защита от преждевременного «МАТЧ ЗАВЕРШЁН»).
+    if TIME_STR != "уточняется":
+        t0 = now.replace(hour=START_H, minute=START_M,
+                         second=0, microsecond=0)
+        tend = t0 + timedelta(minutes=DURATION_MIN)
+        win_start = t0 - timedelta(minutes=LINEUP_CHECK_BEFORE)
+        time_known = True
+    else:
+        t0 = now.replace(hour=18, minute=0, second=0, microsecond=0)
+        tend = t0 + timedelta(minutes=DURATION_MIN)
+        win_start = now.replace(hour=11, minute=0, second=0,
+                                microsecond=0)
+        time_known = False
+    win = win_start <= now < tend
 
     if (now < tend
             and (now >= now.replace(hour=11, minute=0, second=0,
@@ -683,6 +752,7 @@ def main():
 
     if events and not st.get("started"):
         st["started"] = True
+        st["first_ts"] = time.time()
         save_state(st)
         send("🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n🆚 <b>" + t1 + " vs " + t2
              + "</b>\n\nДержим кулаки за команду! 👊")
@@ -699,35 +769,30 @@ def main():
         st["score"] = events[-1]["score"]
     save_state(st)
 
-    if now > tend and st.get("started") and not st.get("final"):
-        st["final"] = True
-        save_state(st)
-        sc = st["score"]
-        our, opp = (sc[0], sc[1]) if OUR_IS_HOME else (sc[1], sc[0])
-        if our > opp:
-            verdict = "🎉 <b>ПОБЕДА!</b> 🎉"
-        elif our < opp:
-            verdict = "😔 <b>ПОРАЖЕНИЕ</b> 😔"
+    # Итог: если время известно — после старта+75 минут;
+    # если нет — не раньше, чем через 85 минут после первого события
+    if st.get("started") and not st.get("final"):
+        if time_known:
+            final_ok = now > tend
+        elif st.get("first_ts"):
+            final_ok = (time.time() - st["first_ts"]
+                        > (DURATION_MIN + 10) * 60)
         else:
-            verdict = "🤝 <b>НИЧЬЯ</b> 🤝"
-        send("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n📊 Итоговый счёт: <b>"
-             + str(sc[0]) + " : " + str(sc[1]) + "</b>\n\n" + verdict
-             + "\n\nСпасибо за игру, команда! 🤝")
-
-
-def announcement(opponent, mdate, time_str, loc):
-    ds = "уточняется"
-    if mdate:
-        y, mo, d = mdate
-        ds = str(d) + " " + MONTHS_RU[mo - 1] + ", "
-        ds += WEEKDAYS_RU[datetime(y, mo, d).weekday()]
-    return ("🔴 <b>FC ITPROVIDER — ДЕНЬ МАТЧА</b> 🔴\n\n"
-            "🆚 Соперник: «" + esc(opponent) + "»\n"
-            "🗓 Дата: " + ds + "\n"
-            "⏱ Старт: " + time_str + " (МСК)\n"
-            "🗺 Локация: " + esc(loc) + "\n\n"
-            "🔗 Трансляция: " + VK_TRANSLATION + "\n\n"
-            "Следите за обновлениями в этом чате.")
+            final_ok = False
+        if final_ok:
+            st["final"] = True
+            save_state(st)
+            sc = st["score"]
+            our, opp = (sc[0], sc[1]) if OUR_IS_HOME else (sc[1], sc[0])
+            if our > opp:
+                verdict = "🎉 <b>ПОБЕДА!</b> 🎉"
+            elif our < opp:
+                verdict = "😔 <b>ПОРАЖЕНИЕ</b> 😔"
+            else:
+                verdict = "🤝 <b>НИЧЬЯ</b> 🤝"
+            send("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n📊 Итоговый счёт: <b>"
+                 + str(sc[0]) + " : " + str(sc[1]) + "</b>\n\n" + verdict
+                 + "\n\nСпасибо за игру, команду! 🤝")
 
 
 if __name__ == "__main__":
