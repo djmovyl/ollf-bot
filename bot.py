@@ -624,13 +624,12 @@ def announcement(opponent, mdate, time_str, loc):
         y, mo, d = mdate
         ds = str(d) + " " + MONTHS_RU[mo - 1] + ", "
         ds += WEEKDAYS_RU[datetime(y, mo, d).weekday()]
-    return ("🔴 <b>FC ITPROVIDER — ДЕНЬ МАТЧА</b> 🔴\n\n"
+    return ("🔥⚽️ <b>FC ITPROVIDER — ДЕНЬ МАТЧА!</b> 🔥⚽️\n\n"
             "🆚 Соперник: «" + esc(opponent) + "»\n"
             "🗓 Дата: " + ds + "\n"
             "⏱ Старт: " + time_str + " (МСК)\n"
             "🗺 Локация: " + esc(loc) + "\n\n"
-            "🔗 Трансляция: " + VK_TRANSLATION + "\n\n"
-            "Следите за обновлениями в этом чате.")
+            "Следите за обновлениями в нашей группе!")
 
 
 def hour_reminder(time_str, loc):
