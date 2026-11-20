@@ -16,8 +16,8 @@ OUR_KEY = "ITPROVIDER"
 PAST_MATCH = False
 MATCH_URL = "https://ollf.ru/match/5905503"
 
-# Время и дата матча теперь берутся из календаря автоматически.
-# Эти значения — только запасной вариант, если время в календаре не нашлось.
+# Время и дата матча теперь берутся из календаря и страницы матча автоматически.
+# Эти значения — только запасной вариант для расчёта конца матча.
 START_H, START_M = 18, 0
 DURATION_MIN = 75
 
@@ -118,7 +118,31 @@ def parse_location(md):
         return (m.group(1) + " " + m.group(2)).strip()
     return "уточняется"
 
-def build_announcement(opponent, mdate, now):
+def parse_match_datetime_from_page(md, now):
+    """Дата ('22 ноября') и время ('15:20') со страницы матча.
+    Возвращает (date, time): date — (year, month, day), time — (hour, minute)."""
+    d, t = None, None
+    m = re.search(
+        r"(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|"
+        r"сентября|октября|ноября|декабря)", md, re.IGNORECASE)
+    if m:
+        day = int(m.group(1))
+        mo = MONTHS_RU.index(m.group(2).lower()) + 1
+        year = now.year
+        if (mo, day) < (now.month, now.day):
+            year += 1  # дата уже прошла в этом году — матч в следующем
+        try:
+            datetime(year, mo, day)
+            d = (year, mo, day)
+        except ValueError:
+            d = None
+        # время ищем сразу после даты — там, где оно стоит на странице
+        tm = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", md[m.end():m.end() + 200])
+        if tm:
+            t = (int(tm.group(1)), int(tm.group(2)))
+    return d, t
+
+def build_announcement(opponent, mdate, time_str):
     """Анонс дня матча по утверждённому шаблону."""
     if mdate:
         y, mo, d = mdate
@@ -129,12 +153,12 @@ def build_announcement(opponent, mdate, now):
         except Exception:
             pass
     else:
-        date_str = str(now.day) + " " + MONTHS_RU[now.month - 1]
+        date_str = "уточняется"
 
     return ("🔴 <b>FC ITPROVIDER — ДЕНЬ МАТЧА</b> 🔴\n\n"
             "🆚 Соперник: «" + esc(opponent) + "»\n"
             "🗓 Дата: " + date_str + "\n"
-            "⏱ Старт: " + format(START_H, "02d") + ":" + format(START_M, "02d") + " (МСК)\n"
+            "⏱ Старт: " + time_str + " (МСК)\n"
             "🗺 Локация: " + esc(LOCATION) + "\n\n"
             "🔗 Трансляция: " + VK_TRANSLATION + "\n\n"
             "Следите за обновлениями в этом чате.")
@@ -365,13 +389,16 @@ def find_our_match(cal_md, today):
     return pick["url"], pick["date"], pick["time"]
 
 def main():
-    global STATE_FILE, OUR_IS_HOME, START_H, START_M, LOCATION
+    global STATE_FILE, OUR_IS_HOME, START_H, START_M, LOCATION, TIME_STR
     now = datetime.now(MSK)
     LOCATION = "уточняется"
+    TIME_STR = format(START_H, "02d") + ":" + format(START_M, "02d")
+    mdate, mtime = None, None
 
     if PAST_MATCH:
         match_url = MATCH_URL
         START_H, START_M = 15, 20
+        TIME_STR = "15:20"
         STATE_FILE = "test_state.json"
     else:
         cal = jina(CALENDAR_URL)
@@ -384,17 +411,11 @@ def main():
             print("Наш матч на сегодня не найден — выходим")
             return
 
-        # Проверяем дату: работаем только в день матча
-        today_key = (now.year, now.month, now.day)
-        if mdate and mdate != today_key:
+        # Если дата в календаре есть — сразу отсекаем чужие дни.
+        # Если нет — решим по странице матча после скачивания.
+        if mdate and mdate != (now.year, now.month, now.day):
             print("Наш матч не сегодня:", mdate, "— выходим")
             return
-
-        if mtime:
-            START_H, START_M = mtime
-        else:
-            START_H, START_M = 18, 0
-            print("Время матча не найдено, ставим по умолчанию 18:00")
 
         STATE_FILE = "prod_state.json"
 
@@ -404,6 +425,29 @@ def main():
         return
     time.sleep(5)
     html = jina(match_url, html=True)
+
+    # Дата и время со страницы матча — надёжнее календаря
+    page_date, page_time = parse_match_datetime_from_page(md, now)
+    if mdate is None:
+        mdate = page_date
+    if mtime is None:
+        mtime = page_time
+
+    if not PAST_MATCH:
+        if mdate is None:
+            print("Дата матча не распознана — анонс не отправляем, выходим")
+            return
+        if mdate != (now.year, now.month, now.day):
+            print("Наш матч не сегодня:", mdate, "— выходим")
+            return
+
+        if mtime:
+            START_H, START_M = mtime
+            TIME_STR = format(START_H, "02d") + ":" + format(START_M, "02d")
+        else:
+            START_H, START_M = 18, 0
+            TIME_STR = "уточняется"
+            print("Время не распознано — в анонсе напишем 'уточняется'")
 
     team1, team2 = parse_teams(md)
     if OUR_KEY not in team1.upper() and OUR_KEY not in team2.upper():
@@ -436,7 +480,7 @@ def main():
         if in_window and st.get("announced") != today_key:
             opponent = team2 if OUR_IS_HOME else team1
             LOCATION = parse_location(md)
-            post = build_announcement(opponent, mdate, now)
+            post = build_announcement(opponent, mdate, TIME_STR)
             print("---- АНОНС ----")
             print(post.replace("<b>", "").replace("</b>", ""))
             print("---------------")
