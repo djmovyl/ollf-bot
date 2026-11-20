@@ -1,6 +1,8 @@
 import os, re, time, requests, traceback
 from datetime import datetime, timedelta, timezone
 
+VERSION = "2.1 (20.11.2026)"
+
 # ===== НАСТРОЙКИ ТЕСТА =====
 # TEST_SEND = True  -> посты уходят в CHAT_ID (сейчас: тестовая группа)
 # TEST_SEND = False -> только печать в лог (безопасно)
@@ -45,8 +47,6 @@ MONTHS_RU = ("января февраля марта апреля мая июн�
 WEEKDAYS_RU = ("понедельник вторник среда четверг "
                "пятница суббота воскресенье").split()
 MSK = timezone(timedelta(hours=3))
-LOCATION = "уточняется"
-OUR_IS_HOME = False
 
 
 def esc(s):
@@ -105,7 +105,7 @@ def parse_match_header(md):
     if m:
         mo = MONTHS_RU.index(m.group(2).lower()) + 1
         mdate = (int(m.group(3)), mo, int(m.group(1)))
-        tail = md[m.end(): m.end() + 120]
+        tail = md[m.end(): m.end() + 150]
         tm = re.search(r"\b(\d{1,2}):(\d{2})\b", tail)
         if tm:
             mtime = (int(tm.group(1)), int(tm.group(2)))
@@ -169,8 +169,7 @@ def parse_lineups(md):
     return sections or None
 
 
-def get_lineup(match_url):
-    proto = jina(match_url + "?active=protocol")
+def get_lineup(proto):
     secs = parse_lineups(proto) if proto else None
     if not secs:
         return []
@@ -222,6 +221,19 @@ def get_stream(match_url):
     return None
 
 
+def dump_event_lines(md, label):
+    print("---- СЫРЫЕ СТРОКИ СОБЫТИЙ:", label, "----")
+    idx = md.find("События матча")
+    zone = md[idx: idx + 3000] if idx >= 0 else ""
+    if not zone:
+        print("(раздел 'События матча' не найден)")
+        return
+    for line in zone.splitlines():
+        s = line.strip()
+        if s.startswith("*"):
+            print("|", s[:200])
+
+
 def md_events(md):
     out, score = [], [0, 0]
     for raw in md.splitlines():
@@ -256,6 +268,25 @@ def md_events(md):
         out.append({"et": et, "minute": minute, "players": players,
                     "score": score[:], "scoring": scoring})
     return out
+
+
+def merge_events(md, proto):
+    evs = []
+    seen = set()
+    sources = [("main", md_events(md))]
+    if proto:
+        sources.append(("proto", md_events(proto)))
+    for label, src in sources:
+        for e in src:
+            if e["et"] == "unknown":
+                continue
+            key = (e["minute"], e["et"], tuple(e["players"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            evs.append(e)
+    evs.sort(key=lambda e: e["minute"])
+    return evs
 
 
 def score_text_for(sc):
@@ -312,23 +343,33 @@ def announcement(opponent, mdate, mtime, loc):
 
 
 def main():
-    global OUR_IS_HOME, LOCATION
+    global OUR_IS_HOME
+    print("ВЕРСИЯ КОДА:", VERSION)
     now = datetime.now(MSK)
     md = jina(MATCH_URL)
     if not md:
         print("Страница матча не скачалась")
         return
+    print("---- НАЧАЛО СТРАНИЦЫ (для отладки шапки) ----")
+    shown = 0
+    for line in md.splitlines():
+        if line.strip():
+            print("|", line.strip()[:130])
+            shown += 1
+        if shown >= 15:
+            break
     t1, t2 = parse_teams(md)
     OUR_IS_HOME = OUR_KEY in t1.upper()
     print("Команды:", t1, "vs", t2, "| Мы хозяева:", OUR_IS_HOME)
 
-    # --- АНОНС (без ссылки на трансляцию) ---
+    # --- АНОНС ---
     mdate, mtime, loc = parse_match_header(md)
     print("Шапка матча: дата", mdate, "| время", mtime, "| локация", loc)
     send(announcement(t2 if OUR_IS_HOME else t1, mdate, mtime, loc))
 
     # --- СОСТАВ ---
-    lineup = get_lineup(MATCH_URL)
+    proto = jina(MATCH_URL + "?active=protocol")
+    lineup = get_lineup(proto)
     if lineup:
         print("ТЕСТ СОСТАВ — найдено", len(lineup), "игроков")
         send_lineup(lineup)
@@ -343,9 +384,15 @@ def main():
         print("ТЕСТ ТРАНСЛЯЦИЯ — не найдена")
 
     # --- СОБЫТИЯ ---
+    dump_event_lines(md, "основная вкладка")
+    dump_event_lines(proto, "вкладка Протокол")
+    raw_evs = merge_events(md, proto)
+    if not raw_evs:
+        print("События не распознаны")
+        return
     our_names = set(n for _, n, _ in lineup)
     evs = []
-    for e in md_events(md):
+    for e in raw_evs:
         ev = {"et": e["et"], "minute": e["minute"], "score": e["score"],
               "player": e["players"][0] if e["players"] else "?",
               "assist": e["players"][1] if len(e["players"]) > 1 else None}
@@ -354,13 +401,6 @@ def main():
         else:
             ev["ours"] = any(p in our_names for p in e["players"])
         evs.append(ev)
-    if not evs:
-        print("События не распознаны. Сырой раздел События матча:")
-        idx = md.find("События матча")
-        for line in md[idx: idx + 1500].splitlines():
-            if line.strip():
-                print("|", line.strip()[:150])
-        return
     send("🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n🆚 <b>" + t1 + " vs " + t2
          + "</b>\n\nДержим кулаки за команду! 👊")
     for ev in evs:
@@ -370,18 +410,17 @@ def main():
             send(post)
 
     # --- ИТОГ ---
-    if evs:
-        sc = evs[-1]["score"]
-        our, opp = (sc[0], sc[1]) if OUR_IS_HOME else (sc[1], sc[0])
-        if our > opp:
-            verdict = "🎉 <b>ПОБЕДА!</b> 🎉"
-        elif our < opp:
-            verdict = "😔 <b>ПОРАЖЕНИЕ</b> 😔"
-        else:
-            verdict = "🤝 <b>НИЧЬЯ</b> 🤝"
-        send("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n📊 Итоговый счёт: <b>"
-             + str(sc[0]) + " : " + str(sc[1]) + "</b>\n\n" + verdict
-             + "\n\nСпасибо за игру, команда! 🤝")
+    sc = evs[-1]["score"]
+    our, opp = (sc[0], sc[1]) if OUR_IS_HOME else (sc[1], sc[0])
+    if our > opp:
+        verdict = "🎉 <b>ПОБЕДА!</b> 🎉"
+    elif our < opp:
+        verdict = "😔 <b>ПОРАЖЕНИЕ</b> 😔"
+    else:
+        verdict = "🤝 <b>НИЧЬЯ</b> 🤝"
+    send("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n📊 Итоговый счёт: <b>"
+         + str(sc[0]) + " : " + str(sc[1]) + "</b>\n\n" + verdict
+         + "\n\nСпасибо за игру, команда! 🤝")
 
 
 if __name__ == "__main__":
