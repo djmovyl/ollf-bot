@@ -12,22 +12,105 @@ DURATION_MIN = 75
 LINEUP_CHECK_BEFORE = 5
 VK_TRANSLATION = "https://vkvideo.ru/@club154907309/all"
 
+# Служебные константы для регулярок: избегаем опасных последовательностей
+BS = chr(92)
+LB = BS + "["
+RB = BS + "]"
+LP = BS + "("
+RP = BS + ")"
+
 TIME_PAT = re.compile(r"(\d{1,3})'\s*(\d{2})''")
 SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*$")
 NAME = r"[А-ЯЁ][а-яё\-]+"
+NAME_RE = re.compile(NAME + r"\s+" + NAME)
 
+IMG_MD = re.compile(
+    "!" + LB + "[^" + RB + "]*" + RB + LP + "[^" + RP + "]*" + RP)
 PAT_P = re.compile(
-    r"\*\s+(\d{1,2})\s+
-$$
-\s*"    + NAME + r"\s+" + NAME + r"\s*(К|ВР)?
-$$
-"
-    + r"
-$$
-\s*https://ollf\.ru/player/", re.I)PAT_TEAM = re.compile(    r"([^!]+?)https://ollf\.ru/tournament/\d+/teams"    r"/application\?team_id=\d+", re.I)IMG_MD = re.compile(r"![^]*[^)]*")JUNK = ("кубок", "чемпионат", "лига", "турнир", "календарь", "группа",        "сезон", "тур ", "оллф", "статистика", "таблица", "протокол",        "события", "автогол")MONTHS_RU = ("января февраля марта апреля мая июня "             "июля августа сентября октября ноября декабря").split()WEEKDAYS_RU = ("понедельник вторник среда четверг "               "пятница суббота воскресенье").split()MSK = timezone(timedelta(hours=3))OUR_IS_HOME = TrueLOCATION = "уточняется"TIME_STR = "18:00"STATE_FILE = "prod_state.json"```
-```pythondef tg(method, **p):    r = requests.post("https://api.telegram.org/bot" + TOKEN + "/" + method,                      data=p, timeout=20)    return r.json()def esc(s):    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")def send(text):    if PAST_MATCH:        print("[ТЕСТ] Сообщение НЕ отправлено в канал:")        print(text.replace("<b>", "").replace("</b>", ""))        return    res = tg("sendMessage", chat_id=CHANNEL, text=text[:3900],             parse_mode="HTML")    if not res.get("ok"):        print("Telegram error:", res)def jina(url, html=False):    h = {"X-Return-Format": "html" if html else "markdown"}    for _ in range(4):        try:            r = requests.get("https://r.jina.ai/" + url,                             headers=h, timeout=90)            print("jina:", url, "html" if html else "md",                  "->", r.status_code, len(r.text))            if r.status_code == 200 and r.text.strip():                return r.text            time.sleep(15)        except Exception as e:            print("jina error:", e)            time.sleep(15)    return ""def parse_teams(md):    idx = md.find("События матча")    zone = md[:idx] if idx > 0 else md    names = []    for line in zone.splitlines():        if "teams/application?team_id=" not in line:            continue        for c in re.findall(r"([^]*)
-$$
-", line):
+    r"\*\s+(\d{1,2})\s+" + LB + r"\s*"
+    + "(" + NAME + r")\s+(" + NAME + r")\s*"
+    + r"(?:" + LP + "К" + RP + r"|ВР)?"
+    + RB + LP + r"\s*https://ollf\.ru/player/", re.I)
+PAT_TEAM = re.compile(
+    LB + r"([^" + LB + RB + "!]+?)" + RB + LP
+    + r"https://ollf\.ru/tournament/\d+/teams/application\?team_id=\d+",
+    re.I)
+
+JUNK = ("кубок", "чемпионат", "лига", "турнир", "календарь", "группа",
+        "сезон", "тур ", "оллф", "статистика", "таблица", "протокол",
+        "события", "автогол")
+MONTHS_RU = ("января февраля марта апреля мая июня "
+             "июля августа сентября октября ноября декабря").split()
+WEEKDAYS_RU = ("понедельник вторник среда четверг "
+               "пятница суббота воскресенье").split()
+MSK = timezone(timedelta(hours=3))
+OUR_IS_HOME = True
+LOCATION = "уточняется"
+TIME_STR = "18:00"
+STATE_FILE = "prod_state.json"
+
+
+def tg(method, **p):
+    r = requests.post("https://api.telegram.org/bot" + TOKEN + "/" + method,
+                      data=p, timeout=20)
+    return r.json()
+
+
+def esc(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def send(text):
+    if PAST_MATCH:
+        print("[ТЕСТ] Сообщение НЕ отправлено в канал:")
+        print(text.replace("<b>", "").replace("</b>", ""))
+        return
+    res = tg("sendMessage", chat_id=CHANNEL, text=text[:3900],
+             parse_mode="HTML")
+    if not res.get("ok"):
+        print("Telegram error:", res)
+
+
+def jina(url, html=False):
+    h = {"X-Return-Format": "html" if html else "markdown"}
+    for _ in range(4):
+        try:
+            r = requests.get("https://r.jina.ai/" + url,
+                             headers=h, timeout=90)
+            print("jina:", url, "html" if html else "md",
+                  "->", r.status_code, len(r.text))
+            if r.status_code == 200 and r.text.strip():
+                return r.text
+            time.sleep(15)
+        except Exception as e:
+            print("jina error:", e)
+            time.sleep(15)
+    return ""
+
+
+def find_brackets(s):
+    res = []
+    i = 0
+    while True:
+        a = s.find("[", i)
+        if a < 0:
+            break
+        b = s.find("]", a + 1)
+        if b < 0:
+            break
+        res.append(s[a + 1:b])
+        i = b + 1
+    return res
+
+
+def parse_teams(md):
+    idx = md.find("События матча")
+    zone = md[:idx] if idx > 0 else md
+    names = []
+    for line in zone.splitlines():
+        if "teams/application?team_id=" not in line:
+            continue
+        for c in find_brackets(line):
             c = c.strip()
             if (c and not c.startswith("!") and "Image" not in c
                     and ".png" not in c and c not in names):
@@ -36,6 +119,7 @@ $$
         return names[0], names[1]
     return "Хозяева", "Гости"
 
+
 def parse_location(md):
     m = re.search(r"(Манеж|Стадион|Арена|Спорткомплекс|ФОК)\s+"
                   r"([A-ZА-ЯЁA-Za-z0-9][\w\-]*"
@@ -43,6 +127,7 @@ def parse_location(md):
     if m:
         return (m.group(1) + " " + m.group(2)).strip()
     return "уточняется"
+
 
 def announcement(opponent, mdate, time_str):
     ds = "уточняется"
@@ -58,10 +143,13 @@ def announcement(opponent, mdate, time_str):
             "🔗 Трансляция: " + VK_TRANSLATION + "\n\n"
             "Следите за обновлениями в этом чате.")
 
+
 def is_junk(name):
     low = name.lower()
     return any(w in low for w in JUNK)
-    def parse_lineups(md):
+
+
+def parse_lineups(md):
     idx = md.upper().find("СТАРТОВЫЕ СОСТАВЫ")
     if idx < 0:
         return None
@@ -85,6 +173,7 @@ def is_junk(name):
             if all(p[0] != num or p[1] != name for p in pl):
                 pl.append((num, name, mark))
     return sections or None
+
 
 def our_lineup(match_url, md):
     proto = jina(match_url + "?active=protocol")
@@ -113,6 +202,7 @@ def our_lineup(match_url, md):
                 break
     return None
 
+
 def send_lineup(players):
     lines = []
     for num, name, mark in players:
@@ -125,6 +215,7 @@ def send_lineup(players):
     send("📋 <b>Наш состав на сегодняшнюю игру</b>\n\n"
          + "\n".join(lines) + "\n\nВ бой, ITPROVIDER! 💪")
 
+
 def find_stream_url(texts):
     for text in texts:
         if not text:
@@ -136,18 +227,21 @@ def find_stream_url(texts):
             om = re.search(r"oid=(-?\d+)", u)
             im = re.search(r"\bid=(\d+)", u)
             if om and im:
-                return "https://vkvideo.ru/video" + om.group(1) \
-                       + "_" + im.group(1)
+                return ("https://vkvideo.ru/video" + om.group(1)
+                        + "_" + im.group(1))
         for m in re.finditer(
                 r"https?://[^\s\"'<>()\\]*(?:vkvideo\.ru|vk\.com|vk\.ru)"
                 r"/(?:video|live)-?\d+_\d+[^\s\"'<>()\\]*", text):
             return m.group(0).replace("&amp;", "&")
     return None
 
+
 def get_stream(match_url, md):
     burl = match_url + "?active=broadcast"
     return find_stream_url([jina(burl, html=True), jina(burl), md])
-    def md_events(md):
+
+
+def md_events(md):
     out, score = [], [0, 0]
     for raw in md.splitlines():
         s = raw.strip()
@@ -157,12 +251,8 @@ def get_stream(match_url, md):
         if not m:
             continue
         minute = int(m.group(1)) + (1 if int(m.group(2)) > 0 else 0)
-        players = [c.strip() for c in re.findall(r"
-$$
-([^
-$$
-]*)\]", s)
-                   if re.fullmatch(NAME + r"\s+" + NAME, c.strip())]
+        players = [c.strip() for c in find_brackets(s)
+                   if NAME_RE.fullmatch(c.strip())]
         low = s.lower()
         if "жёлт" in low or "желт" in low:
             et = "yellow"
@@ -183,6 +273,7 @@ $$
                     "score": score[:], "scoring": scoring})
     return out
 
+
 def score_text_for(sc):
     our, opp = (sc[0], sc[1]) if OUR_IS_HOME else (sc[1], sc[0])
     shown = str(sc[0]) + " : " + str(sc[1])
@@ -191,6 +282,7 @@ def score_text_for(sc):
     if our < opp:
         return "Счёт: <b>" + shown + "</b>. Не сдаёмся! 💪"
     return "Счёт: <b>" + shown + "</b>. На табло ничья!"
+
 
 def render_post(ev):
     m, p, a = ev["minute"], ev["player"], ev.get("assist")
@@ -217,6 +309,7 @@ def render_post(ev):
                 + str(m) + "' минуте.")
     return None
 
+
 def load_state():
     try:
         with open(STATE_FILE) as f:
@@ -224,9 +317,11 @@ def load_state():
     except Exception:
         return {}
 
+
 def save_state(s):
     with open(STATE_FILE, "w") as f:
         json.dump(s, f)
+
 
 def line_date(s, today):
     dm = re.search(r"\b(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?\b", s)
@@ -239,6 +334,7 @@ def line_date(s, today):
         return (today.year, MONTHS_RU.index(dm.group(2).lower()) + 1,
                 int(dm.group(1)))
     return None
+
 
 def find_our_match(cal_md, today):
     cands = []
@@ -265,6 +361,7 @@ def find_our_match(cal_md, today):
     pick = ([c for c in pool if c["upcoming"]] or pool)[0]
     print("Строка календаря:", pick["line"][:200])
     return pick["url"], pick["date"], pick["time"]
+
 
 def main():
     global OUR_IS_HOME, START_H, START_M, LOCATION, TIME_STR, STATE_FILE
@@ -389,6 +486,7 @@ def main():
         send("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n📊 Итоговый счёт: <b>"
              + str(sc[0]) + " : " + str(sc[1]) + "</b>\n\n" + verdict
              + "\n\nСпасибо за игру, команда! 🤝")
+
 
 if __name__ == "__main__":
     try:
