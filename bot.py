@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.15 (21.11.2026)"
+VERSION = "bot-2.16 (21.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -120,6 +120,38 @@ def send(text):
         print("Telegram error:", res)
 
 
+def direct_fetch(url, html=False):
+    """Запасной путь: страница напрямую, без Jina. Для html — сырой
+    код; для md — грубая конвертация в маркдаун (ссылки и списки)."""
+    try:
+        r = requests.get(url, timeout=30, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0 Safari/537.36"})
+        print("direct:", url, "html" if html else "md",
+              "->", r.status_code, len(r.text))
+        if r.status_code != 200 or not r.text.strip():
+            return ""
+        if html:
+            return r.text
+        s = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", r.text,
+                   flags=re.I | re.S)
+        s = re.sub(r"<a\s+[^>]*href\s*=\s*[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
+                   lambda m: LB + re.sub(r"<[^>]*>", "", m.group(2)).strip()
+                   + RP + LP + m.group(1) + RP, s, flags=re.I | re.S)
+        s = re.sub(r"<(br|/p|/li|/tr|/h[1-6])[^>]*>", "\n", s,
+                   flags=re.I)
+        s = re.sub(r"<li[^>]*>", "* ", s, flags=re.I)
+        s = re.sub(r"<img[^>]*>", " ", s, flags=re.I)
+        s = strip_tags(s)
+        s = re.sub(r"[ \t]+", " ", s)
+        s = re.sub(r"\n\s*\n+", "\n", s)
+        return s
+    except Exception as e:
+        print("direct error:", e)
+        return ""
+
+
 def jina(url, html=False):
     h = {"X-Return-Format": "html" if html else "markdown"}
     for _ in range(3):
@@ -130,11 +162,15 @@ def jina(url, html=False):
                   "->", r.status_code, len(r.text))
             if r.status_code == 200 and r.text.strip():
                 return r.text
+            if r.status_code == 401:
+                print("Jina 401 — идём напрямую, без Jina")
+                break
             time.sleep(10)
         except Exception as e:
             print("jina error:", e)
             time.sleep(10)
-    return ""
+    print("Переходим на прямой запрос страницы")
+    return direct_fetch(url, html)
 
 
 def jina_full_html(url):
@@ -905,7 +941,7 @@ def main():
     # чтобы гарантированно попасть между пятиминутными прогонами
     if time_known and st.get("hour1") != tk:
         dt_min = (t0 - now).total_seconds() / 60
-        if 50 <= dt_min <= 62.5:
+        if 50 <= dt_min <= 62.5 and LOCATION != "уточняется":
             post = hour_reminder(TIME_STR, LOCATION)
             print("---- НАПОМИНАНИЕ ЗА ЧАС ----")
             print(post.replace("<b>", "").replace("</b>", ""))
