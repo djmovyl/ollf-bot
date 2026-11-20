@@ -1,7 +1,7 @@
 import os, re, time, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "2.6 (20.11.2026)"
+VERSION = "2.7 (20.11.2026)"
 
 # ===== НАСТРОЙКИ ТЕСТА =====
 # TEST_SEND = True  -> посты уходят в CHAT_ID (сейчас: тестовая группа)
@@ -21,8 +21,9 @@ MSK = timezone(timedelta(hours=3))
 MONTH_RE = "|".join(MONTHS_RU)
 WEEK_RE = "|".join(WEEKDAYS_RU)
 
-# Служебные константы для регулярок: в исходнике нет ни одной
-# backslash-последовательности, чтобы код не портился при копировании.
+# Служебные константы: GL/GR — захватывающие группы, LP/RP —
+# литеральные скобки. В исходнике нет backslash-последовательностей,
+# чтобы код не портился при копировании из чата.
 BS = chr(92)
 LB = BS + "["
 RB = BS + "]"
@@ -30,22 +31,24 @@ LP = BS + "("
 RP = BS + ")"
 D = BS + "d"
 S = BS + "s"
+GL = "("
+GR = ")"
 
-TIME_PAT = re.compile(LP + D + "{1,3}" + "'" + S + "*"
-                      + LP + D + "{2}" + "''")
-SCORE_END = re.compile(LP + D + "{1,2}" + S + "*" + ":" + S + "*"
-                       + LP + D + "{1,2}" + S + "*$")
+TIME_PAT = re.compile(GL + D + "{1,3}" + GR + "'" + S + "*"
+                      + GL + D + "{2}" + GR + "''")
+SCORE_END = re.compile(GL + D + "{1,2}" + GR + S + "*" + ":" + S + "*"
+                       + GL + D + "{1,2}" + GR + S + "*$")
 NAME = "[А-ЯЁ][а-яё-]+"
 NAME_RE = re.compile(NAME + S + "+" + NAME)
 IMG_MD = re.compile("!" + LB + "^" + RB + "*" + RB
                     + LP + "^" + RP + "*" + RP)
 PAT_P = re.compile(
-    "[*]" + S + "+" + LP + D + "{1,2}" + S + "+" + LB + S + "*"
-    + LP + NAME + RP + S + "+" + LP + NAME + RP + S + "*"
-    + LP + LP + "К" + RP + "|" + "ВР" + RP + "?" + RB
-    + LP + S + "*" + "https://ollf" + BS + "." + "ru/player/", re.I)
+    "[*]" + S + "+" + GL + D + "{1,2}" + GR + S + "+" + LB + S + "*"
+    + GL + NAME + GR + S + "+" + GL + NAME + GR + S + "*"
+    + GL + LP + "К" + RP + GR + "?" + RB + LP + S + "*"
+    + "https://ollf" + BS + "." + "ru/player/", re.I)
 PAT_TEAM = re.compile(
-    LB + LP + "^" + LB + RB + "!" + RB + "+?" + RP + RB + LP
+    LB + GL + "^" + LB + RB + "!" + RB + "+?" + GR + RB + LP
     + "https://ollf" + BS + "." + "ru/tournament/" + D
     + "+/teams/application" + BS + "?" + "team_id=" + D + "+", re.I)
 
@@ -60,11 +63,10 @@ JUNK = ("кубок", "чемпионат", "лига", "турнир", "кал�
         "события", "автогол")
 
 DT_LINE = re.compile(
-    LP + D + "{1,2}" + S + "+" + LP + MONTH_RE + RP + S + "*"
-    + "(?:/|,)" + S + "*" + LP + WEEK_RE + RP + S + "*"
-    + "(?:/|,)?" + S + "*" + LP + D + "{1,2}" + ":" + D + "{2}")
-VENUE_WORDS = ("Манеж", "Стадион", "Арена", "Спорткомплекс", "ФОК",
-               "СК ", "Тасма")
+    GL + D + "{1,2}" + GR + S + "+" + GL + MONTH_RE + GR
+    + "[^" + BS + "n]{0,20}" + GL + D + "{1,2}" + ":" + D + "{2}" + GR)
+VENUE_WORDS = ("Тасма", "Манеж", "Стадион", "Арена", "Спорткомплекс",
+               "ФОК")
 
 
 def esc(s):
@@ -124,28 +126,31 @@ def strip_tags(html):
 
 def loc_from_window(win):
     """Локация из окна шапки: сначала текст после 📍,
-    потом известные слова (Манеж/Стадион/Тасма...)."""
+    потом известные слова со следующим за ними названием."""
     i = win.find("📍")
     if i >= 0:
-        tail = win[i + 1:]
         toks = []
-        for line in tail.splitlines():
-            for w in line.split():
-                if w.isalpha():
-                    toks.append(w)
-            if toks:
-                return " ".join(toks[:2])
+        for w in win[i + 1:].split():
+            if w.isalpha():
+                toks.append(w)
+            elif toks:
+                break
+        if toks:
+            return " ".join(toks[:2])
     for kw in VENUE_WORDS:
-        for line in win.splitlines():
+        lines = win.splitlines()
+        for j, line in enumerate(lines):
             if kw.lower() in line.lower():
-                toks = []
-                for w in line.split():
-                    if w.isalpha():
-                        toks.append(w)
-                    if len(toks) >= 2:
-                        break
+                toks = [w for w in line.split() if w.isalpha()]
+                if toks and len(toks) > 1 and kw.lower() not in (
+                        toks[0].lower() + toks[1].lower()):
+                    return toks[0] + " " + toks[1]
                 if toks:
                     return " ".join(toks[:2])
+                if j + 1 < len(lines):
+                    nxt = [w for w in lines[j + 1].split() if w.isalpha()]
+                    if nxt:
+                        return nxt[0]
     return "уточняется"
 
 
@@ -154,9 +159,6 @@ def extract_match_info(md, html, t1, t2):
     Формат: '15 ноября / воскресенье / 20:00'.
     Из всех кандидатов выбирается тот, рядом с которым
     встречаются имена обеих команд."""
-    mdate = None
-    mtime = None
-    loc = "уточняется"
     texts = [md]
     if html:
         texts.append(strip_tags(html))
@@ -173,17 +175,16 @@ def extract_match_info(md, html, t1, t2):
             d = int(m.group(1))
             mo = MONTHS_RU.index(m.group(2).lower()) + 1
             cd = (datetime.now(MSK).year, mo, d)
-            ct = (int(m.group(4)), int(m.group(5)))
-            cands.append((score, -m.start(), cd, ct, win))
+            hh, mm = m.group(3).split(":")
+            cands.append((score, -m.start(), cd, (int(hh), int(mm)), win))
             print("Кандидат даты:", m.group(0), "| очки:", score)
     if cands:
         best = max(cands, key=lambda c: (c[0], c[1]))
-        mdate, mtime, win = best[2], best[3], best[4]
-        loc = loc_from_window(win)
-        print("Выбранная шапка: дата", mdate, "| время", mtime)
-    else:
-        print("Строк с датой/временем не найдено")
-    return mdate, mtime, loc
+        loc = loc_from_window(best[4])
+        print("Выбранная шапка:", best[2], best[3])
+        return best[2], best[3], loc
+    print("Строк с датой/временем не найдено")
+    return None, None, "уточняется"
 
 
 def parse_teams(md):
@@ -248,7 +249,7 @@ def send_lineup(players):
         s = "№" + str(num) + " " + name
         if mark == "ВР":
             s += " 🧤"
-        elif mark == "К":
+        elif "К" in mark:
             s += " 🅺"
         lines.append(esc(s))
     send("📋 <b>Наш состав на игру</b>\n\n"
@@ -256,8 +257,6 @@ def send_lineup(players):
 
 
 def cut_num(s, key):
-    """Достаёт число после key='oid=' / 'id=', не задевая чужие поля
-    (например, 'id=' внутри 'oid=')."""
     start = 0
     while True:
         i = s.find(key, start)
@@ -369,7 +368,6 @@ def merge_events(md, proto):
 
 
 def classify_card(html, tstr, player):
-    """Определяет цвет карточки по HTML-фрагменту вокруг события."""
     if not html:
         return "yellow", ""
     frags = []
@@ -460,8 +458,14 @@ def main():
     print("Команды:", t1, "vs", t2, "| Мы хозяева:", OUR_IS_HOME)
 
     # --- АНОНС ---
-    mdate, mtime, loc = extract_match_info(md, html, t1, t2)
-    print("Шапка матча: дата", mdate, "| время", mtime, "| локация", loc)
+    try:
+        mdate, mtime, loc = extract_match_info(md, html, t1, t2)
+        print("Шапка матча: дата", mdate, "| время", mtime,
+              "| локация", loc)
+    except Exception:
+        mdate, mtime, loc = None, None, "уточняется"
+        print("Ошибка разбора шапки (продолжаем):")
+        print(traceback.format_exc())
     send(announcement(t2 if OUR_IS_HOME else t1, mdate, mtime, loc))
 
     # --- СОСТАВ ---
