@@ -2,11 +2,10 @@ import os, re, time, requests, traceback
 from datetime import datetime, timedelta, timezone
 
 # ===== НАСТРОЙКИ ТЕСТА =====
+# TEST_SEND = True  -> посты уходят в CHAT_ID (сейчас: тестовая группа)
 # TEST_SEND = False -> только печать в лог (безопасно)
-# TEST_SEND = True  -> отправка в CHAT_ID (укажи свой личный id, полученный
-#                      через getUpdates; НЕ ставь сюда канал!)
-TEST_SEND = False
-CHAT_ID = ""
+TEST_SEND = True
+CHAT_ID = "-1003949616458"
 MATCH_URL = "https://ollf.ru/match/5905503"   # матч с Триумфом
 OUR_KEY = "ITPROVIDER"
 
