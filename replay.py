@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "replay-2.13 (20.11.2026)"
+VERSION = "replay-2.14 (21.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 # Канал реплея: REPLAY_CHANNEL, если задан, иначе общий CHANNEL
@@ -69,9 +69,18 @@ LOCATION = "уточняется"
 
 
 def tg(method, **p):
-    r = requests.post("https://api.telegram.org/bot" + TOKEN + "/" + method,
-                      data=p, timeout=20)
-    return r.json()
+    last = None
+    for attempt in range(4):
+        try:
+            r = requests.post(
+                "https://api.telegram.org/bot" + TOKEN + "/" + method,
+                data=p, timeout=30)
+            return r.json()
+        except Exception as e:
+            last = e
+            print("Telegram ошибка (попытка", attempt + 1, "из 4):", e)
+            time.sleep(5)
+    raise last
 
 
 def esc(s):
@@ -513,7 +522,19 @@ def main():
     if not md:
         print("Страница матча не скачалась")
         return
-    html = jina(MATCH_URL, html=True)
+
+    # Полный HTML: до трёх попыток с обходом кэша — Jina иногда
+    # отдаёт урезанную версию (~12 КБ вместо ~125 КБ)
+    html = ""
+    for attempt in range(3):
+        html = jina(MATCH_URL + ("?r=" + str(attempt + 1) if attempt else ""),
+                    html=True)
+        if len(html) >= 50000:
+            break
+        print("HTML подозрительно мал (", len(html),
+              "байт) — повтор с обходом кэша")
+        time.sleep(5)
+
     proto = jina(MATCH_URL + "?active=protocol")
     t1, t2 = parse_teams(md)
     OUR_IS_HOME = OUR_KEY in t1.upper()
