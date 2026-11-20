@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.10 (20.11.2026)"
+VERSION = "bot-2.11 (20.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -70,6 +70,10 @@ DT_LINE = re.compile(
 # Числовой фолбэк: '22.11.2026' и рядом '18:00'
 NUM_DATE = re.compile(r"\b(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?\b")
 TIME_ONLY = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b")
+# Площадка в контексте календаря: 'Манеж Физра', 'Стадион Тасма'
+VENUE_CTX = re.compile(
+    "(Манеж|Стадион|Арена|Спорткомплекс|ФОК)" + S + "+"
+    + "[A-ZА-ЯЁA-Za-z0-9][^" + S + "|,;]*")
 
 OUR_IS_HOME = True
 LOCATION = "уточняется"
@@ -534,9 +538,9 @@ def line_date(s, today):
 
 
 def find_our_match(cal_md, today):
-    """Ищем наш матч в календаре. Дата и время могут лежать не в самой
-    строке с командой, а в соседних ячейках таблицы — поэтому берём
-    контекст из 2 строк выше и 2 ниже."""
+    """Ищем наш матч в календаре. Дата, время и площадка могут лежать
+    не в самой строке с командой, а в соседних ячейках — поэтому
+    берём широкий контекст (4 строки вверх, 4 вниз)."""
     cands = []
     lines = cal_md.splitlines()
     for i, raw in enumerate(lines):
@@ -546,27 +550,34 @@ def find_our_match(cal_md, today):
         m = re.search(r"match/(\d+)", s)
         if not m:
             continue
-        ctx = " | ".join(x.strip() for x in
-                         lines[max(0, i - 2): i + 3] if x.strip())
+        near = [x.strip() for x in lines[max(0, i - 2): i + 3]
+                if x.strip()]
+        wide = [x.strip() for x in lines[max(0, i - 4): i + 5]
+                if x.strip()]
+        ctx = " | ".join(near)
+        dctx = " | ".join(wide)
         tm = re.search(r"\b(\d{1,2}):(\d{2})\b", ctx)
+        vm = VENUE_CTX.search(dctx)
         cands.append({"url": "https://ollf.ru/match/" + m.group(1),
                       "line": s, "context": ctx,
-                      "date": line_date(ctx, today),
+                      "date": line_date(dctx, today),
                       "time": (int(tm.group(1)), int(tm.group(2)))
                               if tm else None,
+                      "venue": vm.group(0).strip() if vm else None,
                       "upcoming": "- : -" in ctx})
     if not cands:
-        return "", None, None
+        return "", None, None, None
     tk = (today.year, today.month, today.day)
     pool = ([c for c in cands if c["date"] == tk]
             or [c for c in cands if c["date"] is None])
     if not pool:
-        return "", None, None
+        return "", None, None, None
     pick = ([c for c in pool if c["upcoming"]] or pool)[0]
-    print("Строка календаря:", pick["line"][:500])
-    print("Контекст строки:", pick["context"][:500])
-    print("Дата из календаря:", pick["date"], "| время:", pick["time"])
-    return pick["url"], pick["date"], pick["time"]
+    print("Строка календаря:", pick["line"][:300])
+    print("Контекст строки:", pick["context"][:400])
+    print("Дата из календаря:", pick["date"],
+          "| время:", pick["time"], "| площадка:", pick["venue"])
+    return (pick["url"], pick["date"], pick["time"], pick["venue"])
 
 
 def announcement(opponent, mdate, time_str, loc):
@@ -622,7 +633,7 @@ def main():
     if not cal:
         print("Календарь не скачался — выходим, повтор через 5 минут")
         return
-    match_url, mdate, mtime = find_our_match(cal, now.date())
+    match_url, mdate, mtime, cal_venue = find_our_match(cal, now.date())
     if not match_url:
         print("Наш матч на сегодня не найден — выходим")
         return
@@ -641,13 +652,13 @@ def main():
     OUR_IS_HOME = OUR_KEY in t1.upper()
     print("Команды:", t1, "vs", t2, "| Мы хозяева:", OUR_IS_HOME)
 
-    # Шапка: время из календаря, фолбэк со страницы (словесный,
-    # затем числовой); локация со страницы
+    # Шапка со страницы: словесная шапка матч-дня, затем числовой фолбэк
     page_date = page_time = None
     try:
-        page_date, page_time, LOCATION = extract_match_info(md, html,
+        page_date, page_time, page_loc = extract_match_info(md, html,
                                                             t1, t2)
     except Exception:
+        page_loc = "уточняется"
         print("Ошибка разбора шапки (продолжаем):")
         print(traceback.format_exc())
     if page_time is None:
@@ -659,13 +670,24 @@ def main():
         except Exception:
             print("Ошибка числового фолбэка (продолжаем):")
             print(traceback.format_exc())
+
+    # Повторная проверка даты по данным страницы:
+    # в календаре дата может отсутствовать, а шапка матча её знает
+    today_t = (now.year, now.month, now.day)
+    eff_date = mdate or page_date
+    if eff_date and eff_date != today_t:
+        print("Наш матч не сегодня:", eff_date, "— выходим")
+        return
+
+    # Локация: сначала из календаря ('Манеж Физра'),
+    # потом со страницы матча
+    LOCATION = cal_venue or page_loc
     if mtime:
         START_H, START_M = mtime
         TIME_STR = format(START_H, "02d") + ":" + format(START_M, "02d")
     elif page_time:
         START_H, START_M = page_time
         TIME_STR = format(START_H, "02d") + ":" + format(START_M, "02d")
-        mdate = mdate or page_date
     else:
         TIME_STR = "уточняется"
     print("Старт матча:", TIME_STR, "| Локация:", LOCATION)
@@ -709,7 +731,7 @@ def main():
                                     microsecond=0) or now >= t0)
             and st.get("announced") != tk):
         post = announcement(t2 if OUR_IS_HOME else t1,
-                            mdate or page_date, TIME_STR, LOCATION)
+                            eff_date, TIME_STR, LOCATION)
         print("---- АНОНС ----")
         print(post.replace("<b>", "").replace("</b>", ""))
         send(post)
