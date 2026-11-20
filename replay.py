@@ -1,7 +1,7 @@
 import os, re, time, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "2.1 (20.11.2026)"
+VERSION = "2.2 (20.11.2026)"
 
 # ===== НАСТРОЙКИ ТЕСТА =====
 # TEST_SEND = True  -> посты уходят в CHAT_ID (сейчас: тестовая группа)
@@ -38,6 +38,10 @@ PAT_TEAM = re.compile(
 CARD_YELLOW = ("жк", "жёлт", "желт", "жолт", "🟨", "yellow card",
                "предупреждение")
 CARD_RED = ("кк", "красн", "🟥", "red card", "удал")
+MONTH_RE = "|".join(MONTHS_RU)
+RANGE_RE = re.compile(
+    r"\d{1,2}\s+(" + MONTH_RE + r")\s+\d{4}.+\d{1,2}\s+("
+    + MONTH_RE + r")\s+\d{4}", re.I)
 
 JUNK = ("кубок", "чемпионат", "лига", "турнир", "календарь", "группа",
         "сезон", "тур ", "оллф", "статистика", "таблица", "протокол",
@@ -100,24 +104,29 @@ def parse_match_header(md):
     mdate = None
     mtime = None
     loc = "уточняется"
-    m = re.search(r"Матч\s+(\d{1,2})\s+(" + "|".join(MONTHS_RU)
-                  + r")\s+(\d{4})", md, re.I)
-    if m:
-        mo = MONTHS_RU.index(m.group(2).lower()) + 1
-        mdate = (int(m.group(3)), mo, int(m.group(1)))
-        tail = md[m.end(): m.end() + 150]
-        tm = re.search(r"\b(\d{1,2}):(\d{2})\b", tail)
-        if tm:
-            mtime = (int(tm.group(1)), int(tm.group(2)))
-        vm = re.search(r"(Манеж|Стадион|Арена|Спорткомплекс|ФОК)\s+\S+",
-                       tail, re.I)
-        if vm:
-            loc = vm.group(0).strip()
-    if loc == "уточняется":
-        vm = re.search(r"(Манеж|Стадион|Арена|Спорткомплекс|ФОК)\s+\S+",
-                       md, re.I)
-        if vm:
-            loc = vm.group(0).strip()
+    for line in md.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        dm = re.search(r"(\d{1,2})\s+(" + MONTH_RE + r")\s+(\d{4})",
+                       s, re.I)
+        if dm and not RANGE_RE.search(s):
+            mo = MONTHS_RU.index(dm.group(2).lower()) + 1
+            mdate = (int(dm.group(3)), mo, int(dm.group(1)))
+            tm = re.search(r"\b(\d{1,2}):(\d{2})\b", s)
+            if tm:
+                mtime = (int(tm.group(1)), int(tm.group(2)))
+            break
+    if mtime is None:
+        for line in md.splitlines():
+            tm = re.search(r"\b(\d{1,2}):(\d{2})\b", line)
+            if tm and mdate:
+                mtime = (int(tm.group(1)), int(tm.group(2)))
+                break
+    vm = re.search(r"(Манеж|Стадион|Арена|Спорткомплекс|ФОК)\s+"
+                   r"[A-ZА-ЯЁA-Za-z0-9][\w\-]*", md)
+    if vm:
+        loc = vm.group(0).strip()
     return mdate, mtime, loc
 
 
@@ -256,12 +265,18 @@ def md_events(md):
             elif na > score[1]:
                 scoring = "away"
             score = [nh, na]
-        if any(w in low for w in CARD_YELLOW):
-            et = "yellow"
-        elif any(w in low for w in CARD_RED):
+        if any(w in low for w in CARD_RED):
             et = "red"
+        elif any(w in low for w in CARD_YELLOW):
+            et = "yellow"
         elif scoring:
             et = "goal"
+        elif players:
+            # Событие с минутой и игроком, но без счёта и без слов
+            # о карточке — на OLLF карточки пишутся просто фамилией.
+            et = "yellow"
+            print("СОБЫТИЕ БЕЗ СЧЁТА (считаем жёлтой карточкой):",
+                  s[:220])
         else:
             et = "unknown"
             print("НЕОПОЗНАННОЕ СОБЫТИЕ (для отладки):", s[:220])
@@ -350,19 +365,11 @@ def main():
     if not md:
         print("Страница матча не скачалась")
         return
-    print("---- НАЧАЛО СТРАНИЦЫ (для отладки шапки) ----")
-    shown = 0
-    for line in md.splitlines():
-        if line.strip():
-            print("|", line.strip()[:130])
-            shown += 1
-        if shown >= 15:
-            break
     t1, t2 = parse_teams(md)
     OUR_IS_HOME = OUR_KEY in t1.upper()
     print("Команды:", t1, "vs", t2, "| Мы хозяева:", OUR_IS_HOME)
 
-    # --- АНОНС ---
+    # --- АНОНС (без ссылки на трансляцию) ---
     mdate, mtime, loc = parse_match_header(md)
     print("Шапка матча: дата", mdate, "| время", mtime, "| локация", loc)
     send(announcement(t2 if OUR_IS_HOME else t1, mdate, mtime, loc))
