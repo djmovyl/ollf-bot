@@ -16,10 +16,13 @@ OUR_KEY = "ITPROVIDER"
 PAST_MATCH = False
 MATCH_URL = "https://ollf.ru/match/5905503"
 
-# Время и дата матча теперь берутся из календаря и страницы матча автоматически.
+# Время и дата матча берутся из календаря и страницы матча автоматически.
 # Эти значения — только запасной вариант для расчёта конца матча.
 START_H, START_M = 18, 0
 DURATION_MIN = 75
+
+# За сколько минут до старта начинать проверку состава и трансляции
+LINEUP_CHECK_BEFORE = 5
 
 # Канал трансляций vk.video (постоянная ссылка, меняется вручную)
 VK_TRANSLATION = "https://vkvideo.ru/@club154907309/all"
@@ -174,6 +177,78 @@ def build_announcement(opponent, mdate, time_str):
             "🗺 Локация: " + esc(LOCATION) + "\n\n"
             "🔗 Трансляция: " + VK_TRANSLATION + "\n\n"
             "Следите за обновлениями в этом чате.")
+
+def parse_lineups(md):
+    """Ищет составы в протоколе: пары 'номер + имя'.
+    Понимает вид '5 Иванов Иван', '5. Иванов' и табличный '| 5 | Иванов |'.
+    Возвращает [(номер, имя), ...] или None, если игроков не хватает."""
+    players = []
+    for line in md.splitlines():
+        s = line.strip()
+        num, name = None, None
+        m = re.match(r"^(\d{1,2})[\.\)]?\s+([А-ЯЁ][\w\-]+(?:\s+[А-ЯЁ][\w\-]+)?)\s*$", s)
+        if m:
+            num, name = int(m.group(1)), m.group(2).strip()
+        elif "|" in s:
+            parts = [p.strip() for p in s.split("|")]
+            for i, p in enumerate(parts):
+                if re.fullmatch(r"\d{1,2}", p):
+                    for q in parts[i + 1:i + 3]:
+                        if re.fullmatch(r"[А-ЯЁ][\w\-]+(?:\s+[А-ЯЁ][\w\-]+)?", q):
+                            num, name = int(p), q
+                            break
+                    if num is not None:
+                        break
+        if num is not None and 0 < num < 100 and (num, name) not in players:
+            players.append((num, name))
+    if len(players) >= 5:
+        return players
+    return None
+
+def dump_lineup_diagnostics(md):
+    """Печатает в лог строки, похожие на состав, — для подстройки парсера."""
+    shown = 0
+    for line in md.splitlines():
+        s = line.strip()
+        if not s or shown >= 30:
+            break
+        if re.search(r"\d{1,2}\s*[\.\)]?\s*[А-ЯЁ]", s) or "/player/" in s:
+            print("Строка состава? ", s[:120])
+            shown += 1
+
+def send_lineup(players):
+    lines = "\n".join("№" + str(n) + " " + esc(name) for n, name in players)
+    send("📋 <b>Наш состав на сегодняшнюю игру</b>\n\n" + lines
+         + "\n\nВ бой, ITPROVIDER! 💪")
+
+def find_stream_url(html, md):
+    """Ищем конкретную ссылку на трансляцию этой игры в HTML и MD страницы."""
+    for text in (html, md):
+        if not text:
+            continue
+        # 1) VK-плеер во врезке: video_ext.php?oid=..&id=..
+        for m in re.finditer(r"https?://[^\s\"'<>()\\]*video_ext\.php[^\s\"'<>()\\]*",
+                             text):
+            u = m.group(0).replace("&amp;", "&")
+            om = re.search(r"oid=(-?\d+)", u)
+            im = re.search(r"\bid=(\d+)", u)
+            if om and im:
+                return "https://vkvideo.ru/video" + om.group(1) + "_" + im.group(2)
+        # 2) прямые ссылки на видео или эфир VK
+        for m in re.finditer(
+                r"https?://[^\s\"'<>()\\]*(?:vkvideo\.ru|vk\.com|vk\.ru)"
+                r"/(?:video|live)-?\d+_\d+[^\s\"'<>()\\]*", text):
+            return m.group(0).replace("&amp;", "&")
+    # Ничего не нашли — печатаем все VK-ссылки на странице для диагностики
+    for text in (html, md):
+        if not text:
+            continue
+        for m in re.finditer(
+                r"https?://[^\s\"'<>()\\]*(?:vkvideo\.ru|vk\.com|vk\.ru)"
+                r"[^\s\"'<>()\\]*", text):
+            print("VK-ссылка на странице:", m.group(0)[:120])
+    print("VK-ссылок на трансляцию на странице не найдено")
+    return None
 
 def parse_html_events(html, team1, team2):
     """Тип события (гол/ЖК/КК) и сторона — из HTML-классов таймлайна."""
@@ -481,16 +556,31 @@ def main():
     st.setdefault("final", False)
     st.setdefault("score", [0, 0])
 
+    today_key = now.strftime("%Y-%m-%d")
+
+    # Сброс флагов при новом матче: state живёт неделями,
+    # поэтому 'seen'/'started'/'final' вчерашнего матча мешали бы новому
+    if not PAST_MATCH and st.get("match_date") != today_key:
+        st["seen"] = []
+        st["started"] = False
+        st["final"] = False
+        st["score"] = [0, 0]
+        st["match_date"] = today_key
+        st.pop("lineup", None)
+        st.pop("stream", None)
+        save_state(st)
+
+    match_start_dt = now.replace(hour=START_H, minute=START_M,
+                                 second=0, microsecond=0)
+    match_end_dt = match_start_dt + timedelta(minutes=DURATION_MIN)
+
     # ====== АНОНС ДНЯ МАТЧА (один раз в день, с 11:00 МСК) ======
     if not PAST_MATCH:
-        today_key = now.strftime("%Y-%m-%d")
         announce_from = now.replace(hour=11, minute=0, second=0, microsecond=0)
-        match_start = now.replace(hour=START_H, minute=START_M,
-                                  second=0, microsecond=0)
-        match_end = match_start + timedelta(minutes=DURATION_MIN)
         # окно: с 11:00 до конца матча;
         # если матч начался раньше 11:00 — анонс уходит сразу после старта
-        in_window = now < match_end and (now >= announce_from or now >= match_start)
+        in_window = now < match_end_dt and (now >= announce_from
+                                            or now >= match_start_dt)
         if in_window and st.get("announced") != today_key:
             opponent = team2 if OUR_IS_HOME else team1
             LOCATION = parse_location(md)
@@ -501,6 +591,32 @@ def main():
             send(post)
             st["announced"] = today_key   # запоминаем ДАТУ, а не True
             save_state(st)
+
+    # ====== СОСТАВ НА ИГРУ (со 'старт - 5 минут') ======
+    if not PAST_MATCH:
+        check_from = match_start_dt - timedelta(minutes=LINEUP_CHECK_BEFORE)
+        if (check_from <= now <= match_start_dt + timedelta(minutes=10)
+                and st.get("lineup") != today_key):
+            players = parse_lineups(md)
+            if players:
+                print("Состав найден:", players)
+                send_lineup(players)
+                st["lineup"] = today_key
+                save_state(st)
+            else:
+                dump_lineup_diagnostics(md)
+
+    # ====== ССЫЛКА НА ТРАНСЛЯЦИЮ (со 'старт - 5 минут') ======
+    if not PAST_MATCH:
+        if (match_start_dt - timedelta(minutes=LINEUP_CHECK_BEFORE) <= now
+                < match_end_dt
+                and st.get("stream") != today_key):
+            surl = find_stream_url(html, md)
+            if surl:
+                print("Найдена трансляция:", surl)
+                send("📺 <b>А вот и ссылка на игру!</b>\n\n" + surl)
+                st["stream"] = today_key
+                save_state(st)
 
     html_events = parse_html_events(html, team1, team2) if html else []
     md_events = parse_md_events(md)
@@ -531,9 +647,7 @@ def main():
     save_state(st)
 
     # Финальный пост: сравниваем НАШИ голы с голами соперника
-    end_time = now.replace(hour=START_H, minute=START_M, second=0,
-                           microsecond=0) + timedelta(minutes=DURATION_MIN)
-    if now > end_time and st.get("started") and not st.get("final"):
+    if now > match_end_dt and st.get("started") and not st.get("final"):
         st["final"] = True
         save_state(st)
         sc = st["score"]
