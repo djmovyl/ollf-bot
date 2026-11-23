@@ -153,6 +153,9 @@ def classify_goal(scored, our, opp, prev_our, prev_opp, minute,
             return "leading_mid"
         return "fresh"
     # --- пропустили ---
+    if prev_goal is None:
+        # первый гол матча: соперник открывает счёт
+        return "behind_late" if late else "early_trail"
     if we_led_before and diff <= 0:
         return "lost_lead"
     if prev_goal == "scored" and diff > 0:
@@ -396,7 +399,7 @@ MILESTONE_G_TEMPLATES = [
     "💥 {ms_name}!\n\n{n}-й мяч в этом матче на счету {scorer}!"
     "{scorer_stat}{assist_line}\nМинута: {minute}'. "
     "Счёт: <b>{our}:{opp}</b>\n" + SEP + "\n\n{closer}",
-    "🔥 {ms_name}!\n\n{scorer} продолжает поражать — теперь {n} мяч(ей) "
+    "🔥 {ms_name}!\n\n{scorer} продолжает поражать — теперь {n} {n_word} "
     "за матч!{scorer_stat}{assist_line}\nТабло: <b>{our}:{opp}</b>\n"
     + SEP + "\n\n{closer}"]
 
@@ -495,6 +498,17 @@ def esc(s):
     return (s or "").replace("&", "&amp;").replace("<", "&lt;") \
         .replace(">", "&gt;")
 
+def plural(n, one, few, many):
+    n = abs(n) % 100
+    if 11 <= n <= 19:
+        return many
+    n %= 10
+    if n == 1:
+        return one
+    if 2 <= n <= 4:
+        return few
+    return many
+
 # ================= СБОРКА ПОСТОВ =================
 def _stat_goals(n):
     return ("\n📊 " + str(n) + "-й гол в чемпионате") if n is not None else ""
@@ -510,9 +524,9 @@ def build_goal_post(state, scored, scorer, assister, minute, our, opp,
     key = classify_goal(scored, our, opp, prev_our, prev_opp, minute,
                         prev_goal, we_led_before, minutes_since)
     closer = pick_closer(state, key)
-    # счётчики в матче ПОСЛЕ текущего события
-    g_n = scorer_match_goals + 1 if scored else 0
-    a_n = assister_match_assists + 1 if assister else 0
+    # счётчики уже включают текущее событие — так их отдаёт bot.py
+    g_n = scorer_match_goals if scored else 0
+    a_n = assister_match_assists if assister else 0
     scorer_ms = g_n if (scored and g_n >= 2) else None
     assist_ms = a_n if (assister and a_n >= 2) else None
 
@@ -522,7 +536,6 @@ def build_goal_post(state, scored, scorer, assister, minute, our, opp,
         scorer_stat = _stat_goals(sg)
         scorer = esc(scorer)
         assist_line = ""
-        aa = None
         if assister:
             aa = season_count(state, assister, "assists",
                               assister_match_assists, match_url)
@@ -538,16 +551,16 @@ def build_goal_post(state, scored, scorer, assister, minute, our, opp,
                     + assist_stat
         # милстоун забившего — приоритет перед пас-милстоуном
         if scorer_ms:
-            ms_name = MILESTONE_GOAL_NAMES.get(scorer_ms,
-                        str(scorer_ms) + " мячей в матче")
             if scorer_ms > 5:
                 ms_name = str(g_n) + " МЯЧЕЙ"
                 ms_lower = str(g_n) + " мячей"
             else:
+                ms_name = MILESTONE_GOAL_NAMES.get(scorer_ms)
                 ms_lower = MILESTONE_GOAL_LOWER[scorer_ms]
             closer = pick_closer(state, "milestone_g" + str(min(scorer_ms, 6)))
             tpl = pick_tpl(state, MILESTONE_G_TEMPLATES)
             return tpl.format(ms_name=ms_name, ms_lower=ms_lower, n=g_n,
+                              n_word=plural(g_n, "мяч", "мяча", "мячей"),
                               scorer=scorer, scorer_stat=scorer_stat,
                               assist_line=assist_line, minute=minute,
                               our=our, opp=opp, closer=closer)
@@ -635,13 +648,8 @@ def run_demo():
     counts = {}
     for et, ours, minute, player, assist, our, opp in evs:
         if et == "goal":
-            post = build_goal_post(
-                st, ours, player, assist, minute, our, opp,
-                prev_our, prev_opp, prev_goal, we_led,
-                (minute - prev_min) if prev_min is not None else None,
-                counts.get(player, {}).get("goals", 0),
-                counts.get(assist, {}).get("assists", 0) if assist else 0,
-                match_url="demo")
+            # счётчики матча обновляем ДО поста: цифра в посте
+            # включает и текущий гол/пас — как в bot.py
             if ours:
                 counts.setdefault(player, {"goals": 0, "assists": 0,
                                            "yellow": 0})
@@ -650,6 +658,13 @@ def run_demo():
                     counts.setdefault(assist, {"goals": 0, "assists": 0,
                                                "yellow": 0})
                     counts[assist]["assists"] += 1
+            post = build_goal_post(
+                st, ours, player, assist, minute, our, opp,
+                prev_our, prev_opp, prev_goal, we_led,
+                (minute - prev_min) if prev_min is not None else None,
+                counts.get(player, {}).get("goals", 0),
+                counts.get(assist, {}).get("assists", 0) if assist else 0,
+                match_url="demo")
             prev_our, prev_opp = our, opp
             prev_goal = "scored" if ours else "conceded"
             prev_min = minute
