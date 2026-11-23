@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.29 (23.11.2026)"
+VERSION = "bot-2.30 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -688,58 +688,6 @@ def send_lineup(players):
          + "\n".join(lines) + "\n\nВ бой, ITPROVIDER! 💪")
 
 
-def cut_num(s, key):
-    start = 0
-    while True:
-        i = s.find(key, start)
-        if i < 0:
-            return None
-        if i > 0 and s[i - 1].isalnum():
-            start = i + 1
-            continue
-        out = ""
-        for ch in s[i + len(key):]:
-            if ch.isdigit() or (ch == "-" and not out):
-                out += ch
-            else:
-                break
-        if out:
-            return out
-        start = i + 1
-
-
-def find_stream_url(texts):
-    for text in texts:
-        if not text:
-            continue
-        t = text.replace("&amp;", "&")
-        for tok in (t.replace('"', " ").replace("'", " ")
-                    .replace("<", " ").replace(">", " ").split()):
-            low = tok.lower()
-            if "video_ext.php" in low:
-                oid = cut_num(tok, "oid=")
-                vid = cut_num(tok, "id=")
-                if oid and vid:
-                    return "https://vkvideo.ru/video" + oid + "_" + vid
-            if low.startswith("http"):
-                for key in ("vkvideo.ru/video", "vkvideo.ru/live",
-                            "vk.com/video", "vk.ru/video"):
-                    if key in low:
-                        return tok.rstrip(",;)]}.")
-    return None
-
-
-def get_stream(match_url, md):
-    burl = match_url + "?active=broadcast"
-    for attempt in range(3):
-        surl = find_stream_url([jina(burl, html=True), jina(burl), md])
-        if surl:
-            return surl
-        print("Трансляция не найдена, попытка", attempt + 1, "из 3")
-        time.sleep(10)
-    return None
-
-
 def md_events(md):
     out, score = [], [0, 0]
     for raw in md.splitlines():
@@ -956,10 +904,10 @@ def announcement(opponent, mdate, time_str, loc, standings_text=""):
             "🗓 Дата: " + ds + "\n"
             "⏱ Старт: " + time_str + " (МСК)\n"
             "🗺 Локация: " + esc(loc))
-    if STREAM_URL:
-        body += "\n\n" + stream_link()
     if standings_text:
         body += "\n\n" + standings_text
+    if STREAM_URL:
+        body += "\n\n" + stream_link()
     return body + "\n\nСледите за обновлениями в нашей группе!"
 
 
@@ -970,11 +918,8 @@ def hour_reminder(time_str, loc):
         loc_line = ("📍 <b>Локация уточняется</b> — гляньте в календаре "
                     "турнира: " + esc("https://ollf.ru/tournament/1067343"
                                       "/calendar"))
-    s = ("⏰ <b>ИГРА УЖЕ СКОРО!</b>\n\n"
-         "⏱ Начало в <b>" + time_str + "</b> (МСК)\n\n" + loc_line)
-    if STREAM_URL:
-        s += "\n\n" + stream_link()
-    return s
+    return ("⏰ <b>ИГРА УЖЕ СКОРО!</b>\n\n"
+            "⏱ Начало в <b>" + time_str + "</b> (МСК)\n\n" + loc_line)
 
 
 def test_mode():
@@ -1150,7 +1095,7 @@ def main():
         print("Матч уже закрыт в состоянии — выходим")
         return
 
-    # Окна. Если время матча неизвестно: анонс/состав/трансляция —
+    # Окна. Если время матча неизвестно: анонс/состав —
     # с 11:00 до вечера; итог — не раньше, чем через 85 минут после
     # первого события (защита от преждевременного «МАТЧ ЗАВЕРШЁН»).
     if TIME_STR != "уточняется":
@@ -1235,9 +1180,14 @@ def main():
             ev["ours"] = any(p in our_names for p in e["players"])
         events.append(ev)
 
-    if events and not st.get("started"):
-        st["started"] = True
-        st["first_ts"] = time.time()
+    # «МАТЧ НАЧАЛСЯ»: при известном времени — ровно в старт матча
+    # по шапке (окно t0..tend), даже если событий в протоколе ещё нет.
+    # Если время неизвестно — по первому событию, как раньше.
+    start_ok = (t0 <= now < tend) if time_known else bool(events)
+    if start_ok and st.get("started") != tk:
+        st["started"] = tk
+        if events and not st.get("first_ts"):
+            st["first_ts"] = time.time()
         save_state(st)
         send("🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n🆚 <b>" + t1 + " vs " + t2
              + "</b>\n\nДержим кулаки за команду! 👊")
