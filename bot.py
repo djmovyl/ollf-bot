@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.25 (23.11.2026)"
+VERSION = "bot-2.26 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -9,6 +9,9 @@ CHANNEL = os.environ.get("CHANNEL", "")
 TG_API = os.environ.get("TG_API_URL", "https://api.telegram.org")
 # Секрет прокси из воркера (заголовок x-proxy-secret)
 TG_PROXY_SECRET = os.environ.get("TG_PROXY_SECRET", "")
+# Ключ Jina Reader: страховой режим. Анонимный доступ пробуем первым,
+# с ключом — только когда аноним закрылся (401) или отдал заглушку
+JINA_KEY = os.environ.get("JINA_API_KEY", "")
 CALENDAR_URL = "https://ollf.ru/tournament/1067343/calendar"
 TABLES_URL = "https://ollf.ru/tournament/1067343/tables"
 OUR_KEY = "ITPROVIDER"
@@ -218,26 +221,42 @@ def direct_fetch(url, html=False):
 
 
 def jina_reader(url, html=False):
-    """Крайний случай: Jina Reader без ключа. Доступ для анонимов
-    дышит волнами: то 401, то заглушки, то работает."""
-    h = {"X-Return-Format": "html" if html else "markdown",
-         "X-Retain-Images": "none"}
-    for _ in range(2):
-        try:
-            r = requests.get("https://r.jina.ai/" + url,
-                             headers=h, timeout=60)
-            print("jina:", url, "html" if html else "md",
-                  "->", r.status_code, len(r.text))
-            if r.status_code == 200 and r.text.strip():
-                return r.text
-            if r.status_code == 401:
-                print("Jina 401 — анонимный доступ закрыт, дальше "
-                      "только прокси/прямой запрос")
-                break
-            time.sleep(10)
-        except Exception as e:
-            print("jina error:", e)
-            time.sleep(10)
+    """Jina Reader двухступенчато: сначала анонимный запрос. Если он
+    закрыт (401) или для полного HTML отдал подозрительно мало —
+    повторяем с ключом из секрета JINA_API_KEY. Ключ тратится только
+    когда аноним не работает. Запросы с ключом помечены звёздочкой
+    в логе: 'jina*:'."""
+    h0 = {"X-Return-Format": "html" if html else "markdown",
+          "X-Retain-Images": "none"}
+    attempts = [h0]
+    if JINA_KEY:
+        h1 = dict(h0)
+        h1["Authorization"] = "Bearer " + JINA_KEY
+        attempts.append(h1)
+    for h in attempts:
+        with_key = h is not h0
+        for _ in range(2):
+            try:
+                r = requests.get("https://r.jina.ai/" + url,
+                                 headers=h, timeout=60)
+                print("jina" + ("*" if with_key else "") + ":",
+                      url, "html" if html else "md",
+                      "->", r.status_code, len(r.text))
+                if r.status_code == 200 and r.text.strip():
+                    if html and not with_key and len(r.text) < 30000:
+                        print("Анонимный HTML подозрительно мал — "
+                              "пробуем с ключом")
+                        break
+                    return r.text
+                if r.status_code == 401:
+                    print("Jina 401 — анонимный доступ закрыт"
+                          + (", пробуем с ключом"
+                             if not with_key and JINA_KEY else ""))
+                    break
+                time.sleep(10)
+            except Exception as e:
+                print("jina error:", e)
+                time.sleep(10)
     return ""
 
 
@@ -960,6 +979,8 @@ def main():
     print("Telegram API через:", TG_API.rstrip("/")
           if TG_API.rstrip("/") != "https://api.telegram.org"
           else "напрямую (TG_API_URL не задан!)")
+    print("Ключ Jina:", "задан (страховой режим активен)"
+          if JINA_KEY else "не задан — только анонимный Jina")
     init_path_pref()
     now = datetime.now(MSK)
     if PAST_MATCH:
