@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.26 (23.11.2026)"
+VERSION = "bot-2.27 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -221,27 +221,30 @@ def direct_fetch(url, html=False):
 
 
 def jina_reader(url, html=False):
-    """Jina Reader двухступенчато: сначала анонимный запрос. Если он
-    закрыт (401) или для полного HTML отдал подозрительно мало —
-    повторяем с ключом из секрета JINA_API_KEY. Ключ тратится только
-    когда аноним не работает. Запросы с ключом помечены звёздочкой
-    в логе: 'jina*:'."""
+    """Jina Reader двухступенчато: сначала до 10 анонимных попыток
+    с паузами по 10 секунд (перестаиваем волны сбоев). 401 — доступ
+    закрыт, сразу идём к ключу. Затем одна попытка с ключом из секрета
+    JINA_API_KEY. Если и это не взяло — отдаём пусто, прогон доходит
+    до конца и завершается; повторный запуск сделает планировщик
+    через 5 минут. Запросы с ключом помечены звёздочкой в логе."""
     h0 = {"X-Return-Format": "html" if html else "markdown",
           "X-Retain-Images": "none"}
-    attempts = [h0]
+    # (заголовки, число попыток): аноним — 10, ключ — 1
+    attempts = [(h0, 10)]
     if JINA_KEY:
         h1 = dict(h0)
         h1["Authorization"] = "Bearer " + JINA_KEY
-        attempts.append(h1)
-    for h in attempts:
+        attempts.append((h1, 1))
+    for h, tries in attempts:
         with_key = h is not h0
-        for _ in range(2):
+        for attempt in range(tries):
             try:
                 r = requests.get("https://r.jina.ai/" + url,
                                  headers=h, timeout=60)
                 print("jina" + ("*" if with_key else "") + ":",
                       url, "html" if html else "md",
-                      "->", r.status_code, len(r.text))
+                      "->", r.status_code, len(r.text),
+                      "| попытка", attempt + 1, "из", tries)
                 if r.status_code == 200 and r.text.strip():
                     if html and not with_key and len(r.text) < 30000:
                         print("Анонимный HTML подозрительно мал — "
