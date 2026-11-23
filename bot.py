@@ -1095,8 +1095,11 @@ def test_mode():
         print("ТЕСТ СОСТАВ — не найден")
     events = build_events(md, html, proto, lineup)
     for e in events:
+        info = e["player"]
+        if e.get("assist"):
+            info += " (пас: " + e["assist"] + ")"
         print("СОБЫТИЕ:", e["et"], str(e["minute"]) + "'",
-              e["players"], e["score"])
+              info, e["score"], "| наши:", e["ours"])
     if pg is not None:
         st = {"seen": [], "last_tpl": None, "last_closer": None,
               "season_stats": {}, "stats_synced_match_urls": []}
