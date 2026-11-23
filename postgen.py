@@ -8,7 +8,7 @@ from datetime import date
 
 SEP = "─" * 40
 EARLY_MIN = 3    # до 3-й минуты включительно — ранний гол
-LATE_MIN = 35    # с 35-й минуты — концовка (матч 2x20)
+LATE_MIN = 38    # с 38-й минуты — концовка (последние 3 минуты матча 2x20)
 
 TEAM_STATS_URL = ("https://ollf.ru/tournament/1067343/teams/"
                   "application?team_id=1381365")
@@ -124,47 +124,56 @@ def classify_goal(scored, our, opp, prev_our, prev_opp, minute,
                   prev_goal, we_led_before, minutes_since):
     """scored: True — забили, False — пропустили.
     minutes_since: минут с прошлого гола; None — первое событие матча
-    (fresh не применяется)."""
+    (fresh/fresh_c не применяются).
+    we_led_before: вели ли мы по ходу матча до текущего момента."""
     diff = our - opp
     prev_diff = prev_our - prev_opp
     early = minute <= EARLY_MIN
     late = minute >= LATE_MIN
 
     if scored:
-        if diff > 0 or (diff == 0 and prev_goal == "conceded"
-                        and prev_diff < diff):
-            # отыгрыш после пропущенного (проверяется первым)
-            if prev_goal == "conceded" and prev_diff < diff:
-                if prev_our == 0 and diff <= -3:
-                    return "pride_goal"
-                if prev_diff <= -2 and diff == 0:
-                    return "comeback_level"
-                if prev_diff <= -2 and diff > 0:
+        # --- МЫ ЗАБИЛИ ---
+        # 1. Перед голом отставали: камбэк или сокращение разрыва
+        if prev_diff < 0:
+            if diff == 0:
+                # отыграли хотя бы один мяч, счёт выровняли
+                return "comeback_level"
+            if diff > 0:
+                if we_led_before:
+                    return "lead_restored"
+                if prev_diff <= -2:
                     return "comeback_ahead"
                 return "closing_gap"
+            # diff < 0: сократили разрыв, но всё ещё позади
+            return "closing_gap"
+        # 2. Ведём (или вышли вперёд после равного счёта)
+        if diff > 0:
+            if we_led_before and prev_diff == 0:
+                return "lead_restored"
             if late:
                 return "ahead_late"
             if diff >= 3:
                 return "dominating"
             if early:
                 return "early_lead"
-            if we_led_before and prev_diff < diff and prev_diff <= 0:
-                return "lead_restored"
             return "leading_mid"
+        # diff == 0 при нашем голе возможен только из prev_diff == -1,
+        # что поймано выше; на всякий случай — затишье прервалось в нашу пользу
         return "fresh"
-    # --- пропустили ---
+    # --- ПРОПУСТИЛИ ---
     if prev_goal is None:
         # первый гол матча: соперник открывает счёт
         return "behind_late" if late else "early_trail"
-    if we_led_before and diff <= 0:
-        return "lost_lead"
-    if prev_goal == "scored" and diff > 0:
+    if diff > 0:
+        # мы всё ещё ведём, соперник сократил отрыв
         return "restoring_lead"
     if prev_goal == "scored" and minutes_since is not None \
-            and minutes_since < 5:
+            and minutes_since <= 5:
+        # мгновенный ответ соперника после нашего гола — качели
         return "exchange_c"
-    if diff > 0:
-        return "restoring_lead"
+    if we_led_before:
+        # вели — и счёт уже не в нашу пользу
+        return "lost_lead"
     if late:
         return "behind_late"
     if diff <= -4:
