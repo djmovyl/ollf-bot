@@ -1103,9 +1103,9 @@ def test_mode():
     if pg is not None:
         st = {"seen": [], "last_tpl": None, "last_closer": None,
               "season_stats": {}, "stats_synced_match_urls": []}
-        post_events(events, st, MATCH_URL, do_send=False)
         sync_stats_safe(st, match_url=MATCH_URL)
-    else:
+        post_events(events, st, MATCH_URL, do_send=False)
+        else:
         print("postgen.py не найден — посты не собраны")
 
 
