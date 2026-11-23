@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.22 (23.11.2026)"
+VERSION = "bot-2.23 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -18,6 +18,8 @@ PAST_MATCH = True
 MATCH_URL = "https://ollf.ru/match/5905503"
 START_H, START_M = 18, 0
 DURATION_MIN = 75
+# Окно состава растянуто до 20 минут до старта — при редких прогонах
+# планировщика не проскочим мимо
 LINEUP_CHECK_BEFORE = 20
 VK_TRANSLATION = "https://vkvideo.ru/@club154907309/all"
 # Ссылка на трансляцию: берём из секрета STREAM_URL, если задан,
@@ -131,9 +133,55 @@ def send(text):
         print("Telegram error:", res)
 
 
+def html_to_md(raw):
+    """Сырой HTML в грубый маркдаун — общий конвертер для воркера,
+    прокси и прямого запроса (ссылки и списки, как у Jina)."""
+    s = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", raw,
+               flags=re.I | re.S)
+    s = re.sub(r"<a\s+[^>]*href\s*=\s*[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
+               lambda m: LB + re.sub(r"<[^>]*>", "", m.group(2)).strip()
+               + RP + LP + m.group(1) + RP, s, flags=re.I | re.S)
+    s = re.sub(r"<(br|/p|/li|/tr|/h[1-6])[^>]*>", "\n", s, flags=re.I)
+    s = re.sub(r"<li[^>]*>", "* ", s, flags=re.I)
+    s = re.sub(r"<img[^>]*>", " ", s, flags=re.I)
+    s = strip_tags(s)
+    s = re.sub(r"[ \t]+", " ", s)
+    return re.sub(r"\n\s*\n+", "\n", s)
+
+
+def worker_fetch(url):
+    """Первичный путь: наш Cloudflare Worker (/proxy) — свой IP,
+    без чужих квот и ключей."""
+    try:
+        r = requests.get(TG_API.rstrip("/") + "/proxy",
+                         params={"url": url}, timeout=40,
+                         headers={"x-proxy-secret": TG_PROXY_SECRET})
+        print("worker:", url, "->", r.status_code, len(r.text))
+        if r.status_code == 200 and r.text.strip():
+            return r.text
+    except Exception as e:
+        print("worker error:", e)
+    return ""
+
+
+def proxy_fetch(url):
+    """Запасной путь через публичный прокси: у OLLF анти-бот, прямой
+    запрос с серверных IP может не пройти, а прокси иногда проходит.
+    Возвращает сырой HTML или пустую строку."""
+    try:
+        r = requests.get("https://api.allorigins.win/raw",
+                         params={"url": url}, timeout=40)
+        print("allorigins:", r.status_code, len(r.text))
+        if r.status_code == 200 and r.text.strip():
+            return r.text
+    except Exception as e:
+        print("allorigins error:", e)
+    return ""
+
+
 def direct_fetch(url, html=False):
-    """Запасной путь: страница напрямую, без Jina. Для html — сырой
-    код; для md — грубая конвертация в маркдаун (ссылки и списки)."""
+    """Запасной путь: страница напрямую, без посредников. Сайт OLLF
+    может ответить анти-ботом на серверные IP — тогда пустая строка."""
     try:
         r = requests.get(url, timeout=30, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -145,27 +193,17 @@ def direct_fetch(url, html=False):
             return ""
         if html:
             return r.text
-        s = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", r.text,
-                   flags=re.I | re.S)
-        s = re.sub(r"<a\s+[^>]*href\s*=\s*[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
-                   lambda m: LB + re.sub(r"<[^>]*>", "", m.group(2)).strip()
-                   + RP + LP + m.group(1) + RP, s, flags=re.I | re.S)
-        s = re.sub(r"<(br|/p|/li|/tr|/h[1-6])[^>]*>", "\n", s,
-                   flags=re.I)
-        s = re.sub(r"<li[^>]*>", "* ", s, flags=re.I)
-        s = re.sub(r"<img[^>]*>", " ", s, flags=re.I)
-        s = strip_tags(s)
-        s = re.sub(r"[ \t]+", " ", s)
-        s = re.sub(r"\n\s*\n+", "\n", s)
-        return s
+        return html_to_md(r.text)
     except Exception as e:
         print("direct error:", e)
         return ""
 
 
-def jina(url, html=False):
-    h = {"X-Return-Format": "html" if html else "markdown"}
-    for _ in range(3):
+def jina_reader(url, html=False):
+    """Крайний случай: Jina Reader без ключа. Имя сохранено для логов."""
+    h = {"X-Return-Format": "html" if html else "markdown",
+         "X-Retain-Images": "none"}
+    for _ in range(2):
         try:
             r = requests.get("https://r.jina.ai/" + url,
                              headers=h, timeout=60)
@@ -174,41 +212,42 @@ def jina(url, html=False):
             if r.status_code == 200 and r.text.strip():
                 return r.text
             if r.status_code == 401:
-                print("Jina 401 — идём напрямую, без Jina")
+                print("Jina 401 — анонимный доступ закрыт, дальше "
+                      "только прокси/прямой запрос")
                 break
             time.sleep(10)
         except Exception as e:
             print("jina error:", e)
             time.sleep(10)
-    print("Переходим на прямой запрос страницы")
-    return direct_fetch(url, html)
+    return ""
+
+
+def jina(url, html=False):
+    """Общий загрузчик: Worker -> прокси -> прямой запрос ->
+    Jina без ключа (последний рубеж). Имя оставлено, чтобы не править
+    вызовы по всему файлу."""
+    raw = worker_fetch(url)
+    if raw:
+        return raw if html else html_to_md(raw)
+    p = proxy_fetch(url)
+    if p:
+        return p if html else html_to_md(p)
+    d = direct_fetch(url, html=True)
+    if d:
+        return d if html else html_to_md(d)
+    return jina_reader(url, html)
 
 
 def jina_full_html(url):
-    """Полный HTML: до трёх попыток с обходом кэша — Jina иногда
-    отдаёт урезанную версию (~12 КБ вместо ~125 КБ). Если все попытки
-    дали заглушку — качаем напрямую, без Jina: сайт отдаёт полный
-    код стабильно, а Jina может резать ответ из-за rate limit."""
-    html = ""
-    for attempt in range(3):
-        if attempt:
-            sep = "&" if "?" in url else "?"
-            u = url + sep + "r=" + str(attempt + 1)
-        else:
-            u = url
-        html = jina(u, html=True)
-        if len(html) >= 50000:
-            return html
-        print("HTML подозрительно мал (", len(html),
-              "байт) — повтор с обходом кэша")
-        time.sleep(5)
-    print("Jina стабильно отдаёт заглушку — качаем напрямую")
-    direct = direct_fetch(url, html=True)
-    if len(direct) >= 50000:
-        return direct
-    print("Прямая загрузка тоже мала (", len(direct),
-          "байт) — возвращаем последнее от Jina")
-    return html
+    """Полный HTML: Worker, затем прокси, затем прямой запрос.
+    Проверка на 'подозрительно мал' — защита от заглушек."""
+    for src in (worker_fetch(url), proxy_fetch(url)):
+        if len(src) >= 50000:
+            return src
+    d = direct_fetch(url, html=True)
+    if len(d) >= 50000:
+        return d
+    return jina_reader(url, html=True) or d
 
 
 def find_brackets(s):
@@ -239,7 +278,7 @@ def html_text(html):
 
 def tables_text():
     """Текст страницы таблиц: приоритет — полный HTML (порядок
-    колонок сохраняется), маркдаун Jina — запасной вариант:
+    колонок сохраняется), маркдаун — запасной вариант:
     он может терять числовые колонки у первой таблицы."""
     html = jina_full_html(TABLES_URL)
     if len(html) >= 50000:
@@ -390,7 +429,9 @@ def find_location(texts, date_positions):
 
 
 def extract_match_info(md, html, t1, t2):
-    """Дата/время/локация со страницы матча (шапка матч-дня)."""
+    """Дата/время/локация со страницы матча (шапка матч-дня).
+    Шапка, рядом с которой нет ни одного имени наших команд,
+    датой матча не считается (защита от чужих шапок)."""
     texts = [md]
     if html:
         texts.append(strip_tags(html))
@@ -413,16 +454,13 @@ def extract_match_info(md, html, t1, t2):
                 cands.append((score, -m.start(), cd, ct))
                 print("Кандидат даты:", m.group(0), "| очки:", score)
         date_positions.append(positions)
-    if cands:
-        best = max(cands, key=lambda c: (c[0], c[1]))
-        print("Выбранная шапка:", best[2], best[3])
-        return best[2], best[3], find_location(texts, date_positions)
-    print("Строк с датой/временем не найдено")
-    return None, None, "уточняется"
     cands = [c for c in cands if c[0] > 0]
     if not cands:
         print("Шапок с нашими командами рядом не найдено")
         return None, None, "уточняется"
+    best = max(cands, key=lambda c: (c[0], c[1]))
+    print("Выбранная шапка:", best[2], best[3])
+    return best[2], best[3], find_location(texts, date_positions)
 
 
 def page_datetime(md, html, t1, t2):
@@ -624,7 +662,7 @@ def merge_events(md, proto):
         sources.append(md_events(proto))
     for src in sources:
         for e in src:
-            if e["et"] == "unknown":
+            if e["et"] in ("unknown", "subst"):
                 continue
             key = (e["minute"], e["et"], tuple(e["players"]))
             if key in seen:
@@ -841,19 +879,51 @@ def main():
     if PAST_MATCH:
         test_mode()
         return
-    cal = jina(CALENDAR_URL)
-    if not cal:
-        print("Календарь не скачался — выходим, повтор через 5 минут")
+    tk = now.strftime("%Y-%m-%d")
+    # Календарь качаем один раз в день: найденный матч и «пустой день»
+    # запоминаем в состоянии, чтобы не жечь запросы на каждом прогоне
+    st0 = load_state()
+    match_url = ""
+    mdate = mtime = cal_venue = None
+    if st0.get("match_url") and st0.get("match_url_date") == tk:
+        match_url = st0["match_url"]
+        md0 = st0.get("match_mdate") or []
+        mdate = (int(md0[0]), int(md0[1]), int(md0[2])) \
+            if len(md0) == 3 else None
+        mt = st0.get("match_time") or []
+        mtime = (int(mt[0]), int(mt[1])) if len(mt) == 2 else None
+        cal_venue = st0.get("match_venue")
+        print("Матч уже найден в состоянии:", match_url)
+    elif st0.get("no_match_date") == tk:
+        print("Матч на сегодня не найден ранее (кэш) — выходим")
         return
-    match_url, mdate, mtime, cal_venue = find_our_match(cal, now.date())
-    if not match_url:
-        print("Наш матч на сегодня не найден — выходим")
-        return
-    if mdate and mdate != (now.year, now.month, now.day):
-        print("Наш матч не сегодня:", mdate, "— выходим")
-        return
-    # Страница матча: до двух попыток — Jina иногда отдаёт урезанную
-    # версию без шапки, тогда дата не распознаётся
+    else:
+        cal = jina(CALENDAR_URL)
+        if not cal:
+            print("Календарь не скачался — выходим, повтор через 5 минут")
+            return
+        match_url, mdate, mtime, cal_venue = find_our_match(cal, now.date())
+        if not match_url:
+            st0["no_match_date"] = tk
+            save_state(st0)
+            print("Наш матч на сегодня не найден — выходим")
+            return
+        if mdate and mdate != (now.year, now.month, now.day):
+            st0["no_match_date"] = tk
+            save_state(st0)
+            print("Наш матч не сегодня:", mdate, "— выходим")
+            return
+        st0["match_url"] = match_url
+        st0["match_url_date"] = tk
+        if mdate:
+            st0["match_mdate"] = list(mdate)
+        if mtime:
+            st0["match_time"] = list(mtime)
+        if cal_venue:
+            st0["match_venue"] = cal_venue
+        save_state(st0)
+    # Страница матча: до двух попыток — источник иногда отдаёт
+    # урезанную версию без шапки, тогда дата не распознаётся
     t1 = t2 = None
     md = html = ""
     page_date = page_time = None
@@ -919,15 +989,21 @@ def main():
     lineup = our_lineup(md, proto)
 
     st = load_state()
-    st.setdefault("seen", [])
-    st.setdefault("started", False)
-    st.setdefault("final", False)
-    st.setdefault("score", [0, 0])
-    tk = now.strftime("%Y-%m-%d")
     if st.get("match_date") != tk:
         st = {"seen": [], "started": False, "final": False,
               "score": [0, 0], "match_date": tk}
         save_state(st)
+    st.setdefault("seen", [])
+    st.setdefault("started", False)
+    st.setdefault("final", False)
+    st.setdefault("score", [0, 0])
+    st["match_url"] = match_url
+    st["match_url_date"] = tk
+    if mtime:
+        st["match_time"] = list(mtime)
+    if cal_venue:
+        st["match_venue"] = cal_venue
+    save_state(st)
     if st.get("final"):
         print("Матч уже закрыт в состоянии — выходим")
         return
@@ -969,21 +1045,20 @@ def main():
         send(post)
         st["announced"] = tk
         save_state(st)
-    # Напоминание за час до матча: окно 60 ± 2,5 минуты,
-    # чтобы гарантированно попасть между пятиминутными прогонами.
-    # Локация обязательна: если не распозналась — откладываем до
-    # следующего прогона (в окне их 2-3). Последний шанс (dt_min <= 51) —
-    # шлём с пометкой «уточняется», чтобы канал не молчал.
+    # Напоминание за час: уходит в первый прогон от старта до T-62,5 —
+    # работает даже при редких прогонах планировщика. Если локация ещё
+    # не распозналась — откладываем до следующего прогона; последний
+    # шанс (за 51 минуту и позже) — шлём с пометкой «уточняется».
     if time_known and st.get("hour1") != tk:
         dt_min = (t0 - now).total_seconds() / 60
-        if 0 <= dt_min <= 62.5 and LOCATION != "уточняется":
+        if 0 < dt_min <= 62.5 and LOCATION != "уточняется":
             post = hour_reminder(TIME_STR, LOCATION)
             print("---- НАПОМИНАНИЕ ЗА ЧАС ----")
             print(post.replace("<b>", "").replace("</b>", ""))
             send(post)
             st["hour1"] = tk
             save_state(st)
-        elif LOCATION == "уточняется":
+        elif LOCATION == "уточняется" and 0 < dt_min <= 62.5:
             print("Напоминание за час отложено: локация не распознана,"
                   " до старта", format(dt_min, ".1f"), "минут")
             if dt_min <= 51:
@@ -993,6 +1068,10 @@ def main():
                 send(post)
                 st["hour1"] = tk
                 save_state(st)
+    if win and st.get("lineup") != tk and lineup:
+        send_lineup(lineup)
+        st["lineup"] = tk
+        save_state(st)
 
     our_names = set(n for _, n, _ in lineup) if lineup else set()
     if not our_names:
