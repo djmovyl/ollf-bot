@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.17 (23.11.2026)"
+VERSION = "bot-2.18 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -42,7 +42,7 @@ IMG_MD = re.compile(
     "!" + LB + "[^" + RB + "]*" + RB + LP + "[^" + RP + "]*" + RP)
 # Маркдаун-ссылка: [текст](адрес) -> текст
 PAT_LINK = re.compile(
-    LB + "([^" + RB + "]*)" + RP + LP + "[^" + RP + "]*" + RP)
+    LB + "([^" + RB + "]*)" + RB + LP + "[^" + RP + "]*" + RP)
 PAT_P = re.compile(
     r"\*\s+(\d{1,2})\s+" + LB + r"\s*"
     + "(" + NAME + r")\s+(" + NAME + r")\s*"
