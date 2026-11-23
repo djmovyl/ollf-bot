@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.20 (23.11.2026)"
+VERSION = "bot-2.21 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
