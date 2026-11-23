@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "replay-2.19 (23.11.2026)"
+VERSION = "replay-2.20 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 # Канал реплея: REPLAY_CHANNEL, если задан, иначе общий CHANNEL
@@ -485,31 +485,37 @@ def standings_block(standings, t1, t2):
 
 
 def pin_tokens(text):
+    """Все значки 📍 в тексте: [(позиция, название площадки)].
+    Собираем до 3 слов подряд — получаем полное 'Манеж Физра',
+    а не обрубок 'Манеж'. Ведущие слова-города отбрасываем."""
     out = []
     i = text.find("📍")
     while i >= 0:
         toks = []
         for w in text[i + 1:].split():
-            t = w.strip(".,;:!?()[]|/")
+            t = w.strip(".,;:!?()[]|/«»\"'")
             if t.isalpha():
                 toks.append(t)
             elif toks:
                 break
+        toks = toks[:3]
+        while toks and toks[0].lower() in CITY_WORDS:
+            toks.pop(0)
         if toks:
-            out.append((i, toks[0]))
+            out.append((i, " ".join(toks)))
         i = text.find("📍", i + 1)
     return out
 
 
 def find_location(texts, date_positions):
+    """Локация: среди всех 📍 берём ближайшую к дате матча площадку —
+    с полным названием. Затем fallback по регэкспу площадки
+    в строках текста."""
     best = None
     for text, dpos in zip(texts, date_positions):
         if not text or not dpos:
             continue
         for p, tok in pin_tokens(text):
-            if tok.lower() in CITY_WORDS:
-                print("📍 пропущен (город/мусор):", tok)
-                continue
             dist = min(abs(p - d) for d in dpos)
             print("📍 кандидат:", tok, "| дистанция до даты:", dist)
             if best is None or dist < best[0]:
@@ -519,15 +525,10 @@ def find_location(texts, date_positions):
     for text in texts:
         if not text:
             continue
-        for kw in ("Тасма", "Манеж", "Стадион", "Арена", "ФОК",
-                   "Спорткомплекс"):
-            for line in text.splitlines():
-                if kw.lower() in line.lower():
-                    toks = [w for w in line.split()
-                            if w.isalpha()
-                            and w.lower() not in CITY_WORDS]
-                    if toks:
-                        return toks[0]
+        for line in text.splitlines():
+            m = VENUE_CTX.search(line)
+            if m:
+                return m.group(0).strip()
     return "уточняется"
 
 
@@ -866,7 +867,7 @@ def main():
 
     opponent = t2 if OUR_IS_HOME else t1
 
-    print("=== 1/7 Анонс ===")
+    print("=== 1/6 Анонс ===")
     standings_text = ""
     try:
         tmd = tables_text()
@@ -879,11 +880,11 @@ def main():
     send(announcement(opponent, mdate, time_str, LOCATION, standings_text))
     time.sleep(PAUSE)
 
-    print("=== 2/7 Напоминание за час ===")
+    print("=== 2/6 Напоминание за час ===")
     send(hour_reminder(time_str, LOCATION))
     time.sleep(PAUSE)
 
-    print("=== 3/7 Состав ===")
+    print("=== 3/6 Состав ===")
     lineup = our_lineup(md, proto)
     if lineup:
         print("Найдено игроков:", len(lineup))
@@ -892,12 +893,12 @@ def main():
         print("Состав не найден — пост пропускаем")
     time.sleep(PAUSE)
 
-    print("=== 4/7 МАТЧ НАЧАЛСЯ ===")
+    print("=== 4/6 МАТЧ НАЧАЛСЯ ===")
     send("🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n🆚 <b>" + t1 + " vs " + t2
          + "</b>\n\nДержим кулаки за команду! 👊")
     time.sleep(PAUSE)
 
-    print("=== 5/7 События ===")
+    print("=== 5/6 События ===")
     our_names = set(n for _, n, _ in lineup) if lineup else set()
     if not our_names:
         print("ВНИМАНИЕ: состав пуст — карточки могут "
@@ -929,7 +930,7 @@ def main():
     if events:
         st["score"] = events[-1]["score"]
 
-    print("=== 6/7 Итог ===")
+    print("=== 6/6 Итог ===")
     sc = st.get("score", [0, 0])
     our, opp = (sc[0], sc[1]) if OUR_IS_HOME else (sc[1], sc[0])
     if our > opp:
