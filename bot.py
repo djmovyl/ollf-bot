@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.35 (24.11.2026)"
+VERSION = "bot-2.36 (24.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -520,7 +520,7 @@ def pin_tokens(text):
     return out
 
 
-def find_location(texts, date_positions):
+def find_location(texts, date_positions, quiet=False):
     """Локация: среди всех 📍 берём ближайшую к дате матча площадку —
     с полным названием. Затем fallback по регэкспу площадки
     в строках текста."""
@@ -530,7 +530,8 @@ def find_location(texts, date_positions):
             continue
         for p, tok in pin_tokens(text):
             dist = min(abs(p - d) for d in dpos)
-            print("📍 кандидат:", tok, "| дистанция до даты:", dist)
+            if not quiet:
+                print("📍 кандидат:", tok, "| дистанция до даты:", dist)
             if best is None or dist < best[0]:
                 best = (dist, tok)
     if best and best[0] <= 3000:
@@ -545,10 +546,12 @@ def find_location(texts, date_positions):
     return "уточняется"
 
 
-def extract_match_info(md, html, t1, t2):
+def extract_match_info(md, html, t1, t2, quiet=False):
     """Дата/время/локация со страницы матча (шапка матч-дня).
     Шапка, рядом с которой нет ни одного имени наших команд,
-    датой матча не считается (защита от чужих шапок)."""
+    датой матча не считается (защита от чужих шапок).
+    Для кандидатов с нулевыми очками печатаем окно — сразу видно,
+    почему наши имена рядом не нашлись (quiet отключает печать)."""
     texts = [md]
     if html:
         texts.append(strip_tags(html))
@@ -568,16 +571,22 @@ def extract_match_info(md, html, t1, t2):
                       MONTHS_RU.index(m.group(2).lower()) + 1,
                       int(m.group(1)))
                 ct = (int(m.group(3)), int(m.group(4)))
-                cands.append((score, -m.start(), cd, ct))
-                print("Кандидат даты:", m.group(0), "| очки:", score)
+                if score:
+                    cands.append((score, -m.start(), cd, ct))
+                    print("Кандидат даты:", m.group(0), "| очки:", score)
+                else:
+                    print("Кандидат даты (очки 0):", m.group(0),
+                          "| окно:", win[:150].replace("\n", " "))
         date_positions.append(positions)
     cands = [c for c in cands if c[0] > 0]
     if not cands:
-        print("Шапок с нашими командами рядом не найдено")
-        return None, None, "уточняется"
+        if not quiet:
+            print("Шапок с нашими командами рядом не найдено")
+        return None, None, find_location(texts, date_positions, quiet)
     best = max(cands, key=lambda c: (c[0], c[1]))
-    print("Выбранная шапка:", best[2], best[3])
-    return best[2], best[3], find_location(texts, date_positions)
+    if not quiet:
+        print("Выбранная шапка:", best[2], best[3])
+    return best[2], best[3], find_location(texts, date_positions, quiet)
 
 
 def page_datetime(md, html, t1, t2):
@@ -1190,6 +1199,9 @@ def main():
         save_state(st0)
     # Страница матча: до двух попыток — источник иногда отдаёт
     # урезанную версию без шапки, тогда дата не распознаётся.
+    # Полный HTML на этом этапе НЕ качаем: он нужен только для
+    # карточек и уточнения локации, а без подтверждённой даты бот
+    # всё равно выйдет. Экономим попытки и ключ Jina.
     # Маркер 'teams/application': без него имена команд всё равно
     # не извлечь, так что такой ответ бесполезен.
     t1 = t2 = None
@@ -1201,7 +1213,6 @@ def main():
         if not md:
             print("Страница матча не скачалась")
             continue
-        html = jina_full_html(match_url)
         t1, t2 = parse_teams(md)
         if OUR_KEY not in t1.upper() and OUR_KEY not in t2.upper():
             print("Это не наш матч:", t1, t2)
@@ -1209,7 +1220,7 @@ def main():
         OUR_IS_HOME = OUR_KEY in t1.upper()
         print("Команды:", t1, "vs", t2, "| Мы хозяева:", OUR_IS_HOME)
         try:
-            page_date, page_time, page_loc = extract_match_info(md, html,
+            page_date, page_time, page_loc = extract_match_info(md, "",
                                                                 t1, t2)
         except Exception:
             page_loc = "уточняется"
@@ -1217,7 +1228,7 @@ def main():
             print(traceback.format_exc())
         if page_time is None:
             try:
-                n_date, n_time = page_datetime(md, html, t1, t2)
+                n_date, n_time = page_datetime(md, "", t1, t2)
                 if n_time:
                     page_time = n_time
                     page_date = page_date or n_date
@@ -1239,6 +1250,22 @@ def main():
     if eff_date != (now.year, now.month, now.day):
         print("Наш матч не сегодня:", eff_date, "— выходим")
         return
+
+    # Дата подтверждена как «сегодня»: теперь качаем полный HTML —
+    # он нужен для карточек и уточнения локации
+    html = jina_full_html(match_url)
+    if html:
+        try:
+            h_date, h_time, h_loc = extract_match_info(
+                md, html, t1, t2, quiet=True)
+            if h_time and page_time is None:
+                page_time = h_time
+                page_date = page_date or h_date
+            if h_loc and h_loc != "уточняется":
+                page_loc = h_loc
+        except Exception:
+            print("Ошибка повторного разбора шапки (продолжаем):")
+            print(traceback.format_exc())
 
     # Локация: сначала из календаря ('Манеж Физра'),
     # потом со страницы матча
