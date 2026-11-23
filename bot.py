@@ -563,11 +563,20 @@ def md_events(md):
             continue
         minute = int(m.group(1)) + (1 if int(m.group(2)) > 0 else 0)
         tstr = m.group(0)
-        players = [c.strip() for c in find_brackets(s)
+        # Убираем картинки: в лайв-протоколе имена идут простым текстом
+        clean = IMG_MD.sub(" ", s)
+        players = [c.strip() for c in find_brackets(clean)
                    if NAME_RE.fullmatch(c.strip())]
+        if not players:
+            # Лайв-формат: пары Имя Фамилия простым текстом после времени
+            players = [p.group(0) for p in NAME_RE.finditer(clean[m.end():])]
         low = s.lower()
         scoring = None
         ms = SCORE_END.search(s)
+        if not ms:
+            # В лайве счёт может быть не в конце строки — ищем в любом месте
+            for ms in re.finditer(r"(\d{1,2})\s*:\s*(\d{1,2})", clean):
+                pass
         if ms:
             nh, na = int(ms.group(1)), int(ms.group(2))
             if nh > score[0]:
@@ -581,11 +590,14 @@ def md_events(md):
             et = "yellow"
         elif scoring:
             et = "goal"
-        elif players:
+        elif len(players) == 2:
+            et = "subst"  # две фамилии без счёта — вероятная замена
+        elif len(players) == 1:
+            # Одна фамилия без счёта: возможно, карточка — решит HTML
             et = "card"
         else:
             et = "unknown"
-            print("НЕОПОЗНАННОЕ СОБЫТИЕ (для отладки):", s[:220])
+            print("НЕОПОЗНАННОЕ СОБЫТИЕ (для отладки):", s[:500])
         out.append({"et": et, "minute": minute, "tstr": tstr,
                     "players": players, "score": score[:],
                     "scoring": scoring})
