@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.33 (23.11.2026)"
+VERSION = "bot-2.34 (24.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -29,6 +29,17 @@ VK_TRANSLATION = "https://vkvideo.ru/@club154907309/all"
 # иначе — запасная ссылка на канал VK
 STREAM_URL = os.environ.get("STREAM_URL", VK_TRANSLATION)
 STATE_FILE = "prod_state.json"
+
+# Речевой слой: постген с клише, милстоунами и сезонной статистикой.
+# Если файла нет рядом с ботом — работаем в старом формате постов.
+try:
+    import postgen as pg
+except ImportError:
+    pg = None
+    print("postgen.py не найден — посты пойдут старым форматом")
+
+# Поля сезонной статистики: переживают ежедневный сброс состояния
+STATS_KEYS = ("season_stats", "stats_synced_at", "stats_synced_match_urls")
 
 # Служебные константы для регулярок: избегаем опасных последовательностей
 BS = chr(92)
@@ -63,10 +74,13 @@ CARD_RED = ("кк", "красн", "🟥", "red card", "удал",
 CARD_YELLOW = ("жк", "жёлт", "желт", "жолт", "🟨", "yellow card",
                "предупреждение", "card-yellow", "card_yellow",
                "yellowcard")
+# Автогол: проверяется первым — строка содержит счёт, и без своей
+# ветки она уходила бы в обычный гол
+WORD_AUTOGOAL = "автогол"
 
 JUNK = ("кубок", "чемпионат", "лига", "турнир", "календарь", "группа",
         "сезон", "тур ", "оллф", "статистика", "таблица", "протокол",
-        "события", "автогол")
+        "события")
 MONTHS_RU = ("января февраля марта апреля мая июня "
              "июля августа сентября октября ноября декабря").split()
 WEEKDAYS_RU = ("понедельник вторник среда четверг "
@@ -717,7 +731,9 @@ def md_events(md):
             elif na > score[1]:
                 scoring = "away"
             score = [nh, na]
-        if any(w in low for w in CARD_RED):
+        if WORD_AUTOGOAL in low:
+            et = "autogoal"
+        elif any(w in low for w in CARD_RED):
             et = "red"
         elif any(w in low for w in CARD_YELLOW):
             et = "yellow"
@@ -814,7 +830,138 @@ def render_post(ev):
                     + p + "\n⏱ На " + str(m) + "' минуте.")
         return ("🚨 <b>КРАСНАЯ КАРТОЧКА У СОПЕРНИКА!</b>\n\n⏱ На "
                 + str(m) + "' минуте.")
+    if ev["et"] == "autogoal":
+        cur = ev["score"]
+        our, opp = (cur[0], cur[1]) if OUR_IS_HOME else (cur[1], cur[0])
+        if ev["ours"]:
+            return ("⚽ <b>Автогол — в нашу пользу!</b>\n\n"
+                    "На " + str(m) + "' минуте счёт: <b>"
+                    + str(our) + ":" + str(opp) + "</b>")
+        return ("🥅 <b>Автогол в наши ворота</b>\n\n"
+                "На " + str(m) + "' минуте счёт: <b>"
+                + str(our) + ":" + str(opp) + "</b>")
     return None
+
+
+def build_events(md, html, proto, lineup):
+    """Сборка событий матча: тип, минута, счёт, наши/соперник.
+    Для голов и автоголов направление определяется по счёту протокола,
+    для автогола ours = «гол в нашу пользу»."""
+    our_names = set(n for _, n, _ in lineup) if lineup else set()
+    if not our_names:
+        print("ВНИМАНИЕ: состав пуст — карточки могут "
+              "неверно определить «наши/соперник»")
+    raw_evs = merge_events(md, proto)
+    events = []
+    for e in raw_evs:
+        ev = {"et": e["et"], "minute": e["minute"], "score": e["score"],
+              "player": e["players"][0] if e["players"] else "?",
+              "assist": e["players"][1] if len(e["players"]) > 1 else None}
+        if e["et"] == "card":
+            ctype, frag = classify_card(html, e["tstr"], ev["player"])
+            ev["et"] = ctype
+            print("КАРТОЧКА:", ev["player"], "->", ctype)
+        if ev["et"] in ("goal", "autogoal") and e["scoring"]:
+            ev["ours"] = OUR_IS_HOME == (e["scoring"] == "home")
+        else:
+            ev["ours"] = any(p in our_names for p in e["players"])
+        events.append(ev)
+    return events
+
+
+def post_events(events, st, match_url, do_send=True):
+    """Публикация событий: голы, автоголы и карточки — через postgen,
+    при сбое — откат в старый формат render_post. Здесь же копится
+    статистика матча: вход для сезонных цифр и милстоунов. Автоголы
+    в статистику не идут."""
+    counts = {}
+    prev_our, prev_opp = 0, 0
+    prev_goal, prev_goal_min, we_led = None, None, False
+    for ev in events:
+        # Счётчики матча обновляем ДО поста: сезонная цифра в посте
+        # должна включать и текущий гол/пас
+        if ev["et"] == "goal" and ev["ours"]:
+            c = counts.setdefault(ev["player"],
+                                  {"goals": 0, "assists": 0, "yellow": 0})
+            c["goals"] += 1
+            if ev.get("assist"):
+                counts.setdefault(ev["assist"],
+                                  {"goals": 0, "assists": 0,
+                                   "yellow": 0})["assists"] += 1
+        if ev["et"] == "yellow":
+            counts.setdefault(ev["player"],
+                              {"goals": 0, "assists": 0,
+                               "yellow": 0})["yellow"] += 1
+        eid = str(ev["minute"]) + "-" + ev["et"] + "-" + ev["player"]
+        if eid not in st["seen"]:
+            post = None
+            try:
+                if pg is None:
+                    raise RuntimeError("postgen недоступен")
+                if ev["et"] == "goal":
+                    cur = ev["score"]
+                    our, opp = ((cur[0], cur[1]) if OUR_IS_HOME
+                                else (cur[1], cur[0]))
+                    post = pg.build_goal_post(
+                        st, scored=ev["ours"], scorer=ev["player"],
+                        assister=ev.get("assist"), minute=ev["minute"],
+                        our=our, opp=opp,
+                        prev_our=prev_our, prev_opp=prev_opp,
+                        prev_goal=prev_goal, we_led_before=we_led,
+                        minutes_since=(ev["minute"] - prev_goal_min)
+                        if prev_goal_min is not None else None,
+                        scorer_match_goals=counts.get(ev["player"], {})
+                        .get("goals", 0),
+                        assister_match_assists=(
+                            counts.get(ev["assist"], {})
+                            .get("assists", 0) if ev.get("assist") else 0),
+                        match_url=match_url)
+                elif ev["et"] == "autogoal":
+                    cur = ev["score"]
+                    our, opp = ((cur[0], cur[1]) if OUR_IS_HOME
+                                else (cur[1], cur[0]))
+                    post = pg.build_autogoal_post(st, ev["ours"],
+                                                  ev["minute"], our, opp)
+                elif ev["et"] in ("yellow", "red"):
+                    post = pg.build_card_post(
+                        st, ev["et"], ev["ours"], ev["player"],
+                        ev["minute"],
+                        yellow_before=counts.get(ev["player"], {})
+                        .get("yellow", 0))
+            except Exception:
+                print("Постген не сработал — fallback в старый формат:")
+                print(traceback.format_exc())
+                post = render_post(ev)
+            if post:
+                if do_send:
+                    time.sleep(2)
+                    send(post)
+                else:
+                    print("---- ПОСТ ----")
+                    print(post.replace("<b>", "").replace("</b>", ""))
+            st["seen"].append(eid)
+        # Контекст для классификатора — после поста
+        if ev["et"] in ("goal", "autogoal"):
+            cur = ev["score"]
+            o, p = (cur[0], cur[1]) if OUR_IS_HOME else (cur[1], cur[0])
+            if o > p:
+                we_led = True
+            prev_our, prev_opp = o, p
+            prev_goal = "scored" if ev["ours"] else "conceded"
+            prev_goal_min = ev["minute"]
+
+
+def sync_stats_safe(st, force=False, match_url=""):
+    """Синк сезонной статистики со страницы заявки. Сбой не роняет
+    бот — посты просто выйдут без сезонных цифр."""
+    if pg is None:
+        return
+    try:
+        pg.sync_season_stats(st, fetch=jina, force=force,
+                             match_url=match_url)
+    except Exception:
+        print("Синк статистики не удался (продолжаем):")
+        print(traceback.format_exc())
 
 
 def load_state():
@@ -920,6 +1067,7 @@ def hour_reminder(time_str, loc):
 
 def test_mode():
     """Тестовый прогон на сыгранном матче: только лог."""
+    global OUR_IS_HOME
     init_path_pref()
     md = jina(MATCH_URL, must_contain="teams/application")
     if not md:
@@ -928,6 +1076,7 @@ def test_mode():
     html = jina_full_html(MATCH_URL)
     t1, t2 = parse_teams(md)
     print("Команды:", t1, "vs", t2)
+    OUR_IS_HOME = OUR_KEY in t1.upper()
     try:
         mdate, mtime, loc = extract_match_info(md, html, t1, t2)
         print("Шапка матча: дата", mdate, "| время", mtime,
@@ -944,9 +1093,17 @@ def test_mode():
         print("ТЕСТ СОСТАВ — найдено", len(lineup), "игроков")
     else:
         print("ТЕСТ СОСТАВ — не найден")
-    for e in merge_events(md, proto):
+    events = build_events(md, html, proto, lineup)
+    for e in events:
         print("СОБЫТИЕ:", e["et"], str(e["minute"]) + "'",
               e["players"], e["score"])
+    if pg is not None:
+        st = {"seen": [], "last_tpl": None, "last_closer": None,
+              "season_stats": {}, "stats_synced_match_urls": []}
+        post_events(events, st, MATCH_URL, do_send=False)
+        sync_stats_safe(st, match_url=MATCH_URL)
+    else:
+        print("postgen.py не найден — посты не собраны")
 
 
 def main():
@@ -967,7 +1124,7 @@ def main():
     # Календарь качаем один раз в день: найденный матч и «пустой день»
     # запоминаем в состоянии, чтобы не жечь запросы на каждом прогоне.
     # Маркер OUR_KEY: заглушка анти-бота, протащенная прокси со статусом
-    # 200, не считается скачанным календарём — повtry next раз через 5 минут
+    # 200, не считается скачанным календарём — повторим через 5 минут
     st0 = load_state()
     match_url = ""
     mdate = mtime = cal_venue = None
@@ -1078,8 +1235,11 @@ def main():
 
     st = load_state()
     if st.get("match_date") != tk:
+        # Ежедневный сброс: сезонную статистику сохраняем
+        old = {k: st[k] for k in STATS_KEYS if k in st}
         st = {"seen": [], "started": False, "final": False,
               "score": [0, 0], "match_date": tk}
+        st.update(old)
         save_state(st)
     st.setdefault("seen", [])
     st.setdefault("started", False)
@@ -1092,6 +1252,10 @@ def main():
     if cal_venue:
         st["match_venue"] = cal_venue
     save_state(st)
+
+    # Синк сезонной статистики: раз в сутки, со страницы заявки
+    sync_stats_safe(st, match_url=match_url)
+
     if st.get("final"):
         print("Матч уже закрыт в состоянии — выходим")
         return
@@ -1161,25 +1325,8 @@ def main():
         st["lineup"] = tk
         save_state(st)
 
-    our_names = set(n for _, n, _ in lineup) if lineup else set()
-    if not our_names:
-        print("ВНИМАНИЕ: состав пуст — карточки могут "
-              "неверно определить «наши/соперник»")
-    raw_evs = merge_events(md, proto)
-    events = []
-    for e in raw_evs:
-        ev = {"et": e["et"], "minute": e["minute"], "score": e["score"],
-              "player": e["players"][0] if e["players"] else "?",
-              "assist": e["players"][1] if len(e["players"]) > 1 else None}
-        if e["et"] == "card":
-            ctype, frag = classify_card(html, e["tstr"], ev["player"])
-            ev["et"] = ctype
-            print("КАРТОЧКА:", ev["player"], "->", ctype)
-        if ev["et"] == "goal" and e["scoring"]:
-            ev["ours"] = OUR_IS_HOME == (e["scoring"] == "home")
-        else:
-            ev["ours"] = any(p in our_names for p in e["players"])
-        events.append(ev)
+    # Сборка событий: тип, минута, счёт, наши/соперник
+    events = build_events(md, html, proto, lineup)
 
     # «МАТЧ НАЧАЛСЯ»: при известном времени — ровно в старт матча
     # по шапке (окно t0..tend), даже если событий в протоколе ещё нет.
@@ -1192,15 +1339,9 @@ def main():
         save_state(st)
         send("🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n🆚 <b>" + t1 + " vs " + t2
              + "</b>\n\nДержим кулаки за команду! 👊")
-    for ev in events:
-        eid = str(ev["minute"]) + "-" + ev["et"] + "-" + ev["player"]
-        if eid in st["seen"]:
-            continue
-        post = render_post(ev)
-        if post:
-            time.sleep(2)
-            send(post)
-        st["seen"].append(eid)
+
+    # Публикация: постген с фолбэком в старый формат
+    post_events(events, st, match_url)
     if events:
         st["score"] = events[-1]["score"]
     save_state(st)
@@ -1229,6 +1370,8 @@ def main():
             send("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n📊 Итоговый счёт: <b>"
                  + str(sc[0]) + " : " + str(sc[1]) + "</b>\n\n" + verdict
                  + "\n\nСпасибо за игру, команду! 🤝")
+            # Финальный синк: страница заявки уже включает сыгранный матч
+            sync_stats_safe(st, force=True, match_url=match_url)
 
 
 if __name__ == "__main__":
