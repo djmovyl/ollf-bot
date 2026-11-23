@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "replay-2.18 (23.11.2026)"
+VERSION = "replay-2.19 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 # Канал реплея: REPLAY_CHANNEL, если задан, иначе общий CHANNEL
@@ -662,58 +662,6 @@ def send_lineup(players):
          + "\n".join(lines) + "\n\nВ бой, ITPROVIDER! 💪")
 
 
-def cut_num(s, key):
-    start = 0
-    while True:
-        i = s.find(key, start)
-        if i < 0:
-            return None
-        if i > 0 and s[i - 1].isalnum():
-            start = i + 1
-            continue
-        out = ""
-        for ch in s[i + len(key):]:
-            if ch.isdigit() or (ch == "-" and not out):
-                out += ch
-            else:
-                break
-        if out:
-            return out
-        start = i + 1
-
-
-def find_stream_url(texts):
-    for text in texts:
-        if not text:
-            continue
-        t = text.replace("&amp;", "&")
-        for tok in (t.replace('"', " ").replace("'", " ")
-                    .replace("<", " ").replace(">", " ").split()):
-            low = tok.lower()
-            if "video_ext.php" in low:
-                oid = cut_num(tok, "oid=")
-                vid = cut_num(tok, "id=")
-                if oid and vid:
-                    return "https://vkvideo.ru/video" + oid + "_" + vid
-            if low.startswith("http"):
-                for key in ("vkvideo.ru/video", "vkvideo.ru/live",
-                            "vk.com/video", "vk.ru/video"):
-                    if key in low:
-                        return tok.rstrip(",;)]}.")
-    return None
-
-
-def get_stream(match_url, md):
-    burl = match_url + "?active=broadcast"
-    for attempt in range(3):
-        surl = find_stream_url([jina(burl, html=True), jina(burl), md])
-        if surl:
-            return surl
-        print("Трансляция не найдена, попытка", attempt + 1, "из 3")
-        time.sleep(10)
-    return None
-
-
 def md_events(md):
     out, score = [], [0, 0]
     for raw in md.splitlines():
@@ -857,10 +805,10 @@ def announcement(opponent, mdate, time_str, loc, standings_text=""):
             "🗓 Дата: " + ds + "\n"
             "⏱ Старт: " + time_str + " (МСК)\n"
             "🗺 Локация: " + esc(loc))
-    if STREAM_URL:
-        body += "\n\n" + stream_link()
     if standings_text:
         body += "\n\n" + standings_text
+    if STREAM_URL:
+        body += "\n\n" + stream_link()
     return body + "\n\nСледите за обновлениями в нашей группе!"
 
 
@@ -871,11 +819,8 @@ def hour_reminder(time_str, loc):
         loc_line = ("📍 <b>Локация уточняется</b> — гляньте в календаре "
                     "турнира: " + esc("https://ollf.ru/tournament/1067343"
                                       "/calendar"))
-    s = ("⏰ <b>ИГРА УЖЕ СКОРО!</b>\n\n"
-         "⏱ Начало в <b>" + time_str + "</b> (МСК)\n\n" + loc_line)
-    if STREAM_URL:
-        s += "\n\n" + stream_link()
-    return s
+    return ("⏰ <b>ИГРА УЖЕ СКОРО!</b>\n\n"
+            "⏱ Начало в <b>" + time_str + "</b> (МСК)\n\n" + loc_line)
 
 
 def main():
@@ -947,24 +892,12 @@ def main():
         print("Состав не найден — пост пропускаем")
     time.sleep(PAUSE)
 
-    print("=== 4/7 Трансляция ===")
-    try:
-        surl = get_stream(MATCH_URL, md)
-        if surl:
-            send("📺 <b>А вот и ссылка на игру!</b>\n\n" + surl)
-        else:
-            print("Ссылка не найдена — пост пропускаем")
-    except Exception:
-        print("Ошибка блока трансляции (продолжаем):")
-        print(traceback.format_exc())
-    time.sleep(PAUSE)
-
-    print("=== 5/7 МАТЧ НАЧАЛСЯ ===")
+    print("=== 4/7 МАТЧ НАЧАЛСЯ ===")
     send("🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n🆚 <b>" + t1 + " vs " + t2
          + "</b>\n\nДержим кулаки за команду! 👊")
     time.sleep(PAUSE)
 
-    print("=== 6/7 События ===")
+    print("=== 5/7 События ===")
     our_names = set(n for _, n, _ in lineup) if lineup else set()
     if not our_names:
         print("ВНИМАНИЕ: состав пуст — карточки могут "
@@ -996,7 +929,7 @@ def main():
     if events:
         st["score"] = events[-1]["score"]
 
-    print("=== 7/7 Итог ===")
+    print("=== 6/7 Итог ===")
     sc = st.get("score", [0, 0])
     our, opp = (sc[0], sc[1]) if OUR_IS_HOME else (sc[1], sc[0])
     if our > opp:
