@@ -180,17 +180,34 @@ def classify_goal(scored, our, opp, prev_our, prev_opp, minute,
     return "mid_trail"
 
 # ================= СТАТИСТИКА СТРАНИЦЫ ЗАЯВКИ =================
-SQUAD_ROW_RE = re.compile(
-    r"([А-ЯЁ][а-яё]+ [А-ЯЁ][а-яё]+)\s+"
-    r"\d{2}\.\d{2}\.\d{4},\s*[^\n]*?"
-    r"\s([\d\-]+)\s([\d\-]+)\s([\d\-]+)\s([\d\-]+)\s([\d\-]+)")
+MD_LINK = re.compile(r"!?
+$$
+([^
+$$
+]*)\]$[^)]*$")
+
+def _flatten_md(s):
+    """Маркдаун в плоский текст: ссылки -> текст, таблицные | -> пробелы.
+    Нужен для разбора страницы заявки: Jina отдаёт таблицу с пайпами."""
+    s = MD_LINK.sub(lambda m: m.group(1), s)
+    return s.replace("|", " ")
 
 def _num(s):
-    return int(s) if s.strip().isdigit() else 0
+    s = (s or "").strip()
+    return int(s) if s.isdigit() else 0
+
+# Строка заявки: 'Фамилия Имя ДД.ММ.ГГГГ, N лет(год/года) И Г П ЖК КК'.
+# Возраст пропускаем опционально, прочерки (в т.ч. длинные тире) в цифрах
+SQUAD_ROW_RE = re.compile(
+    r"([А-ЯЁ][а-яё]+ [А-ЯЁ][а-яё]+)\s+"
+    r"\d{2}\.\d{2}\.\d{4}\s*(?:,\s*\d+\s*год\S*)?\s*"
+    r"([\d\-\u2013\u2014]+)\s+([\d\-\u2013\u2014]+)\s+"
+    r"([\d\-\u2013\u2014]+)\s+([\d\-\u2013\u2014]+)\s+([\d\-\u2013\u2014]+)")
 
 def parse_squad_stats(text):
+    flat = _flatten_md(text or "")
     players = {}
-    for m in SQUAD_ROW_RE.finditer(text):
+    for m in SQUAD_ROW_RE.finditer(flat):
         players[m.group(1)] = {
             "games": _num(m.group(2)), "goals": _num(m.group(3)),
             "assists": _num(m.group(4)), "yellow": _num(m.group(5)),
@@ -211,6 +228,7 @@ def sync_season_stats(state, fetch, force=False, match_url=""):
     if fresh:
         state["season_stats"] = fresh
         state["stats_synced_at"] = today
+        print("Заявка:", len(fresh), "игроков распознано")
     if force and match_url:
         lst = state.setdefault("stats_synced_match_urls", [])
         if match_url not in lst:
