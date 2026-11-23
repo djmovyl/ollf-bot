@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.21 (23.11.2026)"
+VERSION = "bot-2.22 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -186,7 +186,9 @@ def jina(url, html=False):
 
 def jina_full_html(url):
     """Полный HTML: до трёх попыток с обходом кэша — Jina иногда
-    отдаёт урезанную версию (~12 КБ вместо ~125 КБ)."""
+    отдаёт урезанную версию (~12 КБ вместо ~125 КБ). Если все попытки
+    дали заглушку — качаем напрямую, без Jina: сайт отдаёт полный
+    код стабильно, а Jina может резать ответ из-за rate limit."""
     html = ""
     for attempt in range(3):
         if attempt:
@@ -200,6 +202,12 @@ def jina_full_html(url):
         print("HTML подозрительно мал (", len(html),
               "байт) — повтор с обходом кэша")
         time.sleep(5)
+    print("Jina стабильно отдаёт заглушку — качаем напрямую")
+    direct = direct_fetch(url, html=True)
+    if len(direct) >= 50000:
+        return direct
+    print("Прямая загрузка тоже мала (", len(direct),
+          "байт) — возвращаем последнее от Jina")
     return html
 
 
