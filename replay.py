@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "replay-2.16 (23.11.2026)"
+VERSION = "replay-2.17 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 # Канал реплея: REPLAY_CHANNEL, если задан, иначе общий CHANNEL
@@ -11,7 +11,7 @@ TG_API = os.environ.get("TG_API_URL", "https://api.telegram.org")
 # Секрет прокси из воркера (заголовок x-proxy-secret)
 TG_PROXY_SECRET = os.environ.get("TG_PROXY_SECRET", "")
 # Ключ Jina Reader: страховой режим. Анонимный доступ пробуем первым,
-# с ключом — только когда аноним закрылся (401) или отдал заглушку
+# с ключом — только когда обе анонимные ступени не взяли
 JINA_KEY = os.environ.get("JINA_API_KEY", "")
 MATCH_URL = "https://ollf.ru/match/5905514"
 TABLES_URL = "https://ollf.ru/tournament/1067343/tables"
@@ -201,38 +201,43 @@ def direct_fetch(url, html=False):
 
 
 def jina_reader(url, html=False):
-    """Jina Reader двухступенчато: сначала до 10 анонимных попыток
-    с паузами по 10 секунд (перестаиваем волны сбоев). 401 — доступ
-    закрыт, сразу идём к ключу. Затем одна попытка с ключом из секрета
-    JINA_API_KEY. Запросы с ключом помечены звёздочкой в логе."""
+    """Jina Reader ступенями, ключ — только в крайнем случае:
+    1) до 10 анонимных попыток на исходном адресе;
+    2) до 10 анонимных попыток с обходом кэша (?r=2);
+    3) одна попытка с ключом из секрета JINA_API_KEY.
+    401 и «подозрительно мал» HTML переводят на следующую ступень.
+    Запросы с ключом помечены звёздочкой в логе."""
     h0 = {"X-Return-Format": "html" if html else "markdown",
           "X-Retain-Images": "none"}
-    # (заголовки, число попыток): аноним — 10, ключ — 1
-    attempts = [(h0, 10)]
+    h1 = dict(h0)
+    h1["Authorization"] = "Bearer " + JINA_KEY
+    sep = "&" if "?" in url else "?"
+    stages = [("исходный", h0, url, 10),
+              ("обход кэша", h0, url + sep + "r=2", 10)]
     if JINA_KEY:
-        h1 = dict(h0)
-        h1["Authorization"] = "Bearer " + JINA_KEY
-        attempts.append((h1, 1))
-    for h, tries in attempts:
-        with_key = h is not h0
+        stages.append(("ключ", h1, url, 1))
+    for i, (label, h, u, tries) in enumerate(stages):
+        with_key = h is h1
+        nxt = stages[i + 1][0] if i + 1 < len(stages) else None
         for attempt in range(tries):
             try:
-                r = requests.get("https://r.jina.ai/" + url,
+                r = requests.get("https://r.jina.ai/" + u,
                                  headers=h, timeout=60)
                 print("jina" + ("*" if with_key else "") + ":",
                       url, "html" if html else "md",
                       "->", r.status_code, len(r.text),
-                      "| попытка", attempt + 1, "из", tries)
+                      "|", label, "| попытка", attempt + 1, "из", tries)
                 if r.status_code == 200 and r.text.strip():
                     if html and not with_key and len(r.text) < 30000:
-                        print("Анонимный HTML подозрительно мал — "
-                              "пробуем с ключом")
+                        print("Анонимный HTML подозрительно мал"
+                              + (" — следующая ступень: " + nxt
+                                 if nxt else ""))
                         break
                     return r.text
                 if r.status_code == 401:
-                    print("Jina 401 — анонимный доступ закрыт"
-                          + (", пробуем с ключом"
-                             if not with_key and JINA_KEY else ""))
+                    print("Jina 401 — доступ закрыт"
+                          + (", следующая ступень: " + nxt
+                             if nxt else ""))
                     break
                 time.sleep(10)
             except Exception as e:
@@ -318,8 +323,8 @@ def jina(url, html=False):
 
 def jina_full_html(url):
     """Полный HTML: пути в запомненном порядке, у каждого — проверка
-    на 'подозрительно мал' (защита от заглушек). Для Jina —
-    до двух попыток с обходом кэша."""
+    на 'подозрительно мал' (защита от заглушек). Для Jina обход кэша
+    и ключ уже встроены в jina_reader — здесь просто один вызов."""
     best = ""
     for name in list(PATH_PREF):
         if name == "worker":
@@ -332,9 +337,6 @@ def jina_full_html(url):
             raw = direct_fetch(url, html=True)
         else:
             raw = jina_reader(url, html=True)
-            if len(raw) < 50000:
-                sep = "&" if "?" in url else "?"
-                raw = jina_reader(url + sep + "r=2", html=True) or raw
         if len(raw) >= 50000:
             remember_path(name)
             return raw
