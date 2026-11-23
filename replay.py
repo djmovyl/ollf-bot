@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "replay-2.17 (23.11.2026)"
+VERSION = "replay-2.18 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 # Канал реплея: REPLAY_CHANNEL, если задан, иначе общий CHANNEL
@@ -17,7 +17,7 @@ MATCH_URL = "https://ollf.ru/match/5905514"
 TABLES_URL = "https://ollf.ru/tournament/1067343/tables"
 OUR_KEY = "ITPROVIDER"
 VK_TRANSLATION = "https://vkvideo.ru/@club154907309/all"
-# Ссылка на трансляцию: из секрета STREAM_URL, если задан,
+# Ссылка на трансляцию: берём из секрета STREAM_URL, если задан,
 # иначе — запасная ссылка на канал VK (как в основном боте)
 STREAM_URL = os.environ.get("STREAM_URL", VK_TRANSLATION)
 STATE_FILE = "test_state.json"
@@ -88,6 +88,14 @@ LOCATION = "уточняется"
 # Порядок путей загрузки страниц: перебираем по очереди, удачный путь
 # запоминаем в состоянии — следующий прогон начнёт с него
 PATH_PREF = ["worker", "allorigins", "codetabs", "direct", "jina"]
+
+
+def stream_link():
+    """Кликабельная строка 'Ссылка на трансляцию' или пустая строка,
+    если ссылка не задана. Взято дословно из основного бота."""
+    if not STREAM_URL:
+        return ""
+    return "📺 <a href=\"" + esc(STREAM_URL) + "\">Ссылка на трансляцию</a>"
 
 
 def tg(method, **p):
@@ -844,23 +852,30 @@ def announcement(opponent, mdate, time_str, loc, standings_text=""):
         y, mo, d = mdate
         ds = str(d) + " " + MONTHS_RU[mo - 1] + ", "
         ds += WEEKDAYS_RU[datetime(y, mo, d).weekday()]
-    body = ("🔴 <b>FC ITPROVIDER — ДЕНЬ МАТЧА</b> 🔴\n\n"
+    body = ("🔥⚽️ <b>FC ITPROVIDER — ДЕНЬ МАТЧА!</b> 🔥⚽️\n\n"
             "🆚 Соперник: «" + esc(opponent) + "»\n"
             "🗓 Дата: " + ds + "\n"
             "⏱ Старт: " + time_str + " (МСК)\n"
-            "🗺 Локация: " + esc(loc) + "\n\n"
-            "🔗 Трансляция: " + esc(STREAM_URL) + "\n\n"
-            "Следите за обновлениями в этом чате.")
+            "🗺 Локация: " + esc(loc))
+    if STREAM_URL:
+        body += "\n\n" + stream_link()
     if standings_text:
         body += "\n\n" + standings_text
-    return body
+    return body + "\n\nСледите за обновлениями в нашей группе!"
 
 
-def hour_reminder(opponent, time_str, loc):
-    return ("⏰ <b>Через час — ИГРА!</b>\n\n"
-            "🆚 Соперник: <b>«" + esc(opponent) + "»</b>\n\n"
-            "⏱ Начало в <b>" + time_str + "</b> (МСК)\n\n"
-            "📍 <b>" + esc(loc) + "</b>")
+def hour_reminder(time_str, loc):
+    if loc and loc != "уточняется":
+        loc_line = "📍 <b>" + esc(loc).upper() + "</b>"
+    else:
+        loc_line = ("📍 <b>Локация уточняется</b> — гляньте в календаре "
+                    "турнира: " + esc("https://ollf.ru/tournament/1067343"
+                                      "/calendar"))
+    s = ("⏰ <b>ИГРА УЖЕ СКОРО!</b>\n\n"
+         "⏱ Начало в <b>" + time_str + "</b> (МСК)\n\n" + loc_line)
+    if STREAM_URL:
+        s += "\n\n" + stream_link()
+    return s
 
 
 def main():
@@ -920,7 +935,7 @@ def main():
     time.sleep(PAUSE)
 
     print("=== 2/7 Напоминание за час ===")
-    send(hour_reminder(opponent, time_str, LOCATION))
+    send(hour_reminder(time_str, LOCATION))
     time.sleep(PAUSE)
 
     print("=== 3/7 Состав ===")
