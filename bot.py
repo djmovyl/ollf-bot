@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.32 (23.11.2026)"
+VERSION = "bot-2.33 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -295,36 +295,36 @@ def remember_path(name):
         pass
 
 
-def jina(url, html=False):
+def jina(url, html=False, must_contain=None):
     """Общий загрузчик: перебираем пути в запомненном порядке —
     Worker, прокси allorigins, прокси codetabs, прямой запрос,
-    Jina Reader. Имя сохранено, чтобы не править вызовы по всему файлу."""
+    Jina Reader. Имя сохранено, чтобы не править вызовы по всему файлу.
+
+    must_contain — маркер настоящей страницы: если его в контенте нет,
+    это заглушка анти-бота (прокси отдают её со статусом 200). Такой
+    ответ отбрасываем, путь заглушки удачным не считаем."""
     for name in list(PATH_PREF):
         if name == "worker":
             raw = worker_fetch(url)
-            if raw:
-                remember_path("worker")
-                return raw if html else html_to_md(raw)
         elif name == "allorigins":
             raw = proxy_fetch(url)
-            if raw:
-                remember_path("allorigins")
-                return raw if html else html_to_md(raw)
         elif name == "codetabs":
             raw = codetabs_fetch(url)
-            if raw:
-                remember_path("codetabs")
-                return raw if html else html_to_md(raw)
         elif name == "direct":
-            d = direct_fetch(url, html=True)
-            if d:
-                remember_path("direct")
-                return d if html else html_to_md(d)
+            raw = direct_fetch(url, html=True)
         elif name == "jina":
-            r = jina_reader(url, html)
-            if r:
-                remember_path("jina")
-                return r
+            raw = jina_reader(url, html)
+        else:
+            raw = None
+        if not raw:
+            continue
+        md = raw if (name == "jina" or html) else html_to_md(raw)
+        if must_contain and must_contain.lower() not in md.lower():
+            print(name + ": в контенте нет маркера '" + must_contain
+                  + "' — похоже на заглушку анти-бота, идём дальше")
+            continue
+        remember_path(name)
+        return raw if (name == "jina" or html) else md
     return ""
 
 
@@ -921,7 +921,7 @@ def hour_reminder(time_str, loc):
 def test_mode():
     """Тестовый прогон на сыгранном матче: только лог."""
     init_path_pref()
-    md = jina(MATCH_URL)
+    md = jina(MATCH_URL, must_contain="teams/application")
     if not md:
         print("Страница матча не скачалась")
         return
@@ -965,7 +965,9 @@ def main():
         return
     tk = now.strftime("%Y-%m-%d")
     # Календарь качаем один раз в день: найденный матч и «пустой день»
-    # запоминаем в состоянии, чтобы не жечь запросы на каждом прогоне
+    # запоминаем в состоянии, чтобы не жечь запросы на каждом прогоне.
+    # Маркер OUR_KEY: заглушка анти-бота, протащенная прокси со статусом
+    # 200, не считается скачанным календарём — повtry next раз через 5 минут
     st0 = load_state()
     match_url = ""
     mdate = mtime = cal_venue = None
@@ -982,7 +984,7 @@ def main():
         print("Матч на сегодня не найден ранее (кэш) — выходим")
         return
     else:
-        cal = jina(CALENDAR_URL)
+        cal = jina(CALENDAR_URL, must_contain=OUR_KEY)
         if not cal:
             print("Календарь не скачался — выходим, повтор через 5 минут")
             return
@@ -1007,13 +1009,15 @@ def main():
             st0["match_venue"] = cal_venue
         save_state(st0)
     # Страница матча: до двух попыток — источник иногда отдаёт
-    # урезанную версию без шапки, тогда дата не распознаётся
+    # урезанную версию без шапки, тогда дата не распознаётся.
+    # Маркер 'teams/application': без него имена команд всё равно
+    # не извлечь, так что такой ответ бесполезен.
     t1 = t2 = None
     md = html = ""
     page_date = page_time = None
     page_loc = "уточняется"
     for attempt in range(2):
-        md = jina(match_url)
+        md = jina(match_url, must_contain="teams/application")
         if not md:
             print("Страница матча не скачалась")
             continue
