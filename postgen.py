@@ -279,7 +279,7 @@ SCORED_TEMPLATES = [
 SCORED_SOLO_TEMPLATES = [
     "⚽ ГОЛ!\n\nНа {minute}' минуте отличился {scorer}!{scorer_stat}\n"
     "Счёт: <b>{our}:{opp}</b>\n" + SEP + "\n\n{closer}",
-    "🎯 ТОЧНО В ЦЕЛЬ!\n\n{scorer} записывает на свой счёт ещё один мяч."
+    "🎯 ТОЧНО В ЦЕЛЬ!\n\n{scorer} записывает мяч на свой счёт."
     "{scorer_stat}\nМинута: {minute}'. Счёт: <b>{our}:{opp}</b>\n"
     + SEP + "\n\n{closer}",
     "⚡ ГОЛ! Есть!\n\n{scorer} забивает на {minute}' минуте.{scorer_stat}\n"
@@ -557,7 +557,8 @@ def build_goal_post(state, scored, scorer, assister, minute, our, opp,
             else:
                 ms_name = MILESTONE_GOAL_NAMES.get(scorer_ms)
                 ms_lower = MILESTONE_GOAL_LOWER[scorer_ms]
-            closer = pick_closer(state, "milestone_g" + str(min(scorer_ms, 6)))
+            closer = pick_closer(state,
+                                 "milestone_g" + str(min(scorer_ms, 6)))
             tpl = pick_tpl(state, MILESTONE_G_TEMPLATES)
             return tpl.format(ms_name=ms_name, ms_lower=ms_lower, n=g_n,
                               n_word=plural(g_n, "мяч", "мяча", "мячей"),
@@ -565,7 +566,8 @@ def build_goal_post(state, scored, scorer, assister, minute, our, opp,
                               assist_line=assist_line, minute=minute,
                               our=our, opp=opp, closer=closer)
         if assist_ms:
-            closer = pick_closer(state, "milestone_a" + str(min(assist_ms, 5)))
+            closer = pick_closer(state,
+                                 "milestone_a" + str(min(assist_ms, 5)))
             tpl = pick_tpl(state, MILESTONE_A_TEMPLATES)
             return tpl.format(scorer=scorer, assister=esc(assister),
                               minute=minute, our=our, opp=opp,
