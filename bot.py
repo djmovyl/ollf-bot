@@ -780,9 +780,14 @@ def announcement(opponent, mdate, time_str, loc, standings_text=""):
 
 
 def hour_reminder(time_str, loc):
+    if loc and loc != "уточняется":
+        loc_line = "📍 <b>" + esc(loc).upper() + "</b>"
+    else:
+        loc_line = ("📍 <b>Локация уточняется</b> — гляньте в календаре "
+                    "турнира: " + esc("https://ollf.ru/tournament/1067343"
+                                      "/calendar"))
     s = ("⏰ <b>ИГРА УЖЕ СКОРО!</b>\n\n"
-         "⏱ Начало в <b>" + time_str + "</b> (МСК)\n\n"
-         "📍 <b>" + loc.upper() + "</b>")
+         "⏱ Начало в <b>" + time_str + "</b> (МСК)\n\n" + loc_line)
     if STREAM_URL:
         s += "\n\n" + stream_link()
     return s
