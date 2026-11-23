@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.18 (23.11.2026)"
+VERSION = "bot-2.19 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -223,11 +223,12 @@ def strip_tags(html):
 
 
 def flatten_table_md(s):
-    """Чистим маркдаун таблицы: убираем картинки, ссылки и черты
-    таблиц — цифры между | | ломали разбор строки команды."""
+    """Чистим маркдаун таблицы: убираем картинки, ссылки, черты
+    таблиц и звёздочки списков — Jina разбивает таблицы на списки,
+    и цифры между | и * ломали разбор строки команды."""
     s = IMG_MD.sub(" ", s)
     s = PAT_LINK.sub(lambda m: m.group(1), s)
-    s = s.replace("|", " ")
+    s = s.replace("|", " ").replace("*", " ")
     return re.sub(r"\s+", " ", s)
 
 
