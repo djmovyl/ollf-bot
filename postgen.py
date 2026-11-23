@@ -180,9 +180,8 @@ def classify_goal(scored, our, opp, prev_our, prev_opp, minute,
     return "mid_trail"
 
 # ================= СТАТИСТИКА СТРАНИЦЫ ЗАЯВКИ =================
-# ВАЖНО: скобки собираются из кодов символов, чтобы строка не обрывалась
-# при копировании кода из чата (квадратные скобки там съедались как
-# маркдаун-ссылка — отсюда были SyntaxError на этой строке).
+# ВАЖНО: квадратные и круглые скобки в регэкспах собираются из кодов
+# символов, чтобы строки не обрывались при копировании кода из чата.
 LB = chr(91)
 RB = chr(93)
 LP = chr(40)
@@ -211,24 +210,39 @@ def _num(s):
     s = (s or "").strip()
     return int(s) if s.isdigit() else 0
 
-# Строка заявки: 'Фамилия Имя ДД.ММ.ГГГГ, N лет(год/года) И Г П ЖК КК'.
-# Возраст пропускаем опционально, прочерки (в т.ч. длинные тире) в цифрах
+# Классы для регэкспов (собираются без скобок в исходнике)
 NUMCLS = LP + LB + r"\d\-\u2013\u2014" + RB + RP
-SQUAD_ROW_RE = re.compile(
-    LP + LB + "А-ЯЁ" + RB + LB + "а-яё" + RB + "+ " + LB + "А-ЯЁ" + RB
-    + LB + "а-яё" + RB + "+" + RP + r"\s+"
-    + r"\d{2}\.\d{2}\.\d{4}\s*(?:,\s*\d+\s*год\S*)?\s*"
-    + NUMCLS + r"\s+" + NUMCLS + r"\s+" + NUMCLS + r"\s+"
-    + NUMCLS + r"\s+" + NUMCLS)
+NUMTOK = re.compile(NUMCLS)
+NAMEW = re.compile(LP + LB + "А-ЯЁ" + RB + LB + "а-яё" + RB + "+")
+DATE_RE = re.compile(r"\d{2}\.\d{2}\.\d{4}")
+AGE_RE = re.compile(r",\s*\d+\s*год\S*")
 
 def parse_squad_stats(text):
+    """Разбор заявки ПО СТРОКАМ: имя + дата рождения + 5 последних
+    числовых ячеек (игры, голы, передачи, ЖК, КК). Строка без полного
+    набора чисел просто пропускается — не смешивается с соседними."""
     flat = _flatten_md(text or "")
     players = {}
-    for m in SQUAD_ROW_RE.finditer(flat):
-        players[m.group(1)] = {
-            "games": _num(m.group(2)), "goals": _num(m.group(3)),
-            "assists": _num(m.group(4)), "yellow": _num(m.group(5)),
-            "red": _num(m.group(6))}
+    for raw in flat.splitlines():
+        if "*" in raw:
+            raw = raw.replace("*", " ")
+        dm = DATE_RE.search(raw)
+        if not dm:
+            continue
+        words = raw[:dm.start()].split()
+        if len(words) < 2:
+            continue
+        w1, w2 = words[-2], words[-1]
+        if not (NAMEW.fullmatch(w1) and NAMEW.fullmatch(w2)):
+            continue
+        tail = AGE_RE.sub(" ", raw[dm.end():])
+        toks = [t for t in tail.split() if NUMTOK.fullmatch(t)]
+        if len(toks) < 5:
+            continue
+        players[w1 + " " + w2] = {
+            "games": _num(toks[-5]), "goals": _num(toks[-4]),
+            "assists": _num(toks[-3]), "yellow": _num(toks[-2]),
+            "red": _num(toks[-1])}
     return players
 
 def sync_season_stats(state, fetch, force=False, match_url=""):
@@ -245,7 +259,11 @@ def sync_season_stats(state, fetch, force=False, match_url=""):
     if fresh:
         state["season_stats"] = fresh
         state["stats_synced_at"] = today
-        print("Заявка:", len(fresh), "игроков распознано")
+        print("Заявка:", len(fresh), "игроков распознано:")
+        for n in sorted(fresh):
+            d = fresh[n]
+            print("  ", n, "->", d["games"], d["goals"], d["assists"],
+                  d["yellow"], d["red"])
     if force and match_url:
         lst = state.setdefault("stats_synced_match_urls", [])
         if match_url not in lst:
