@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.23 (23.11.2026)"
+VERSION = "bot-2.24 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -93,6 +93,10 @@ OUR_IS_HOME = True
 LOCATION = "уточняется"
 TIME_STR = "уточняется"
 
+# Порядок путей загрузки страниц: перебираем по очереди, удачный путь
+# запоминаем в состоянии — следующий прогон начнёт с него
+PATH_PREF = ["worker", "allorigins", "direct", "jina"]
+
 
 def stream_link():
     """Кликабельная строка 'Ссылка на трансляцию' или пустая строка,
@@ -150,8 +154,9 @@ def html_to_md(raw):
 
 
 def worker_fetch(url):
-    """Первичный путь: наш Cloudflare Worker (/proxy) — свой IP,
-    без чужих квот и ключей."""
+    """Путь через наш Cloudflare Worker (/proxy) — у OLLF анти-бот,
+    который отсекает даже IP Cloudflare (468), так что сейчас это
+    скорее заготовка на случай, если защита ослабнет."""
     try:
         r = requests.get(TG_API.rstrip("/") + "/proxy",
                          params={"url": url}, timeout=40,
@@ -165,9 +170,8 @@ def worker_fetch(url):
 
 
 def proxy_fetch(url):
-    """Запасной путь через публичный прокси: у OLLF анти-бот, прямой
-    запрос с серверных IP может не пройти, а прокси иногда проходит.
-    Возвращает сырой HTML или пустую строку."""
+    """Путь через публичный прокси allorigins. Возвращает сырой HTML
+    или пустую строку."""
     try:
         r = requests.get("https://api.allorigins.win/raw",
                          params={"url": url}, timeout=40)
@@ -180,8 +184,8 @@ def proxy_fetch(url):
 
 
 def direct_fetch(url, html=False):
-    """Запасной путь: страница напрямую, без посредников. Сайт OLLF
-    может ответить анти-ботом на серверные IP — тогда пустая строка."""
+    """Прямой запрос страницы, без посредников. Сайт OLLF отвечает
+    анти-ботом (468) на серверные IP — тогда пустая строка."""
     try:
         r = requests.get(url, timeout=30, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -200,7 +204,8 @@ def direct_fetch(url, html=False):
 
 
 def jina_reader(url, html=False):
-    """Крайний случай: Jina Reader без ключа. Имя сохранено для логов."""
+    """Jina Reader без ключа. Доступ для анонимов дышит волнами:
+    то 401, то заглушки, то работает как сейчас."""
     h = {"X-Return-Format": "html" if html else "markdown",
          "X-Retain-Images": "none"}
     for _ in range(2):
@@ -222,32 +227,90 @@ def jina_reader(url, html=False):
     return ""
 
 
+def init_path_pref():
+    """Восстановить порядок путей загрузки из состояния прошлого прогона."""
+    global PATH_PREF
+    try:
+        st = load_state()
+        p = st.get("fetch_path")
+        if p and len(p) == 4 and set(p) == set(PATH_PREF):
+            PATH_PREF = list(p)
+            print("Порядок загрузки из состояния:", " -> ".join(PATH_PREF))
+    except Exception:
+        pass
+
+
+def remember_path(name):
+    """Удачный путь становится первым — следующие запросы идут с него."""
+    global PATH_PREF
+    if not PATH_PREF or PATH_PREF[0] == name:
+        return
+    PATH_PREF.remove(name)
+    PATH_PREF.insert(0, name)
+    print("Порядок загрузки теперь:", " -> ".join(PATH_PREF))
+    try:
+        st = load_state()
+        st["fetch_path"] = list(PATH_PREF)
+        save_state(st)
+    except Exception:
+        pass
+
+
 def jina(url, html=False):
-    """Общий загрузчик: Worker -> прокси -> прямой запрос ->
-    Jina без ключа (последний рубеж). Имя оставлено, чтобы не править
-    вызовы по всему файлу."""
-    raw = worker_fetch(url)
-    if raw:
-        return raw if html else html_to_md(raw)
-    p = proxy_fetch(url)
-    if p:
-        return p if html else html_to_md(p)
-    d = direct_fetch(url, html=True)
-    if d:
-        return d if html else html_to_md(d)
-    return jina_reader(url, html)
+    """Общий загрузчик: перебираем пути в запомненном порядке —
+    Worker, прокси, прямой запрос, Jina Reader. Имя сохранено,
+    чтобы не править вызовы по всему файлу."""
+    for name in list(PATH_PREF):
+        if name == "worker":
+            raw = worker_fetch(url)
+            if raw:
+                remember_path("worker")
+                return raw if html else html_to_md(raw)
+        elif name == "allorigins":
+            raw = proxy_fetch(url)
+            if raw:
+                remember_path("allorigins")
+                return raw if html else html_to_md(raw)
+        elif name == "direct":
+            d = direct_fetch(url, html=True)
+            if d:
+                remember_path("direct")
+                return d if html else html_to_md(d)
+        elif name == "jina":
+            r = jina_reader(url, html)
+            if r:
+                remember_path("jina")
+                return r
+    return ""
 
 
 def jina_full_html(url):
-    """Полный HTML: Worker, затем прокси, затем прямой запрос.
-    Проверка на 'подозрительно мал' — защита от заглушек."""
-    for src in (worker_fetch(url), proxy_fetch(url)):
-        if len(src) >= 50000:
-            return src
-    d = direct_fetch(url, html=True)
-    if len(d) >= 50000:
-        return d
-    return jina_reader(url, html=True) or d
+    """Полный HTML: пути в запомненном порядке, у каждого — проверка
+    на 'подозрительно мал' (защита от заглушек). Для Jina —
+    до двух попыток с обходом кэша."""
+    best = ""
+    for name in list(PATH_PREF):
+        if name == "worker":
+            raw = worker_fetch(url)
+        elif name == "allorigins":
+            raw = proxy_fetch(url)
+        elif name == "direct":
+            raw = direct_fetch(url, html=True)
+        else:
+            raw = jina_reader(url, html=True)
+            if len(raw) < 50000:
+                sep = "&" if "?" in url else "?"
+                raw = jina_reader(url + sep + "r=2", html=True) or raw
+        if len(raw) >= 50000:
+            remember_path(name)
+            return raw
+        if len(raw) > len(best):
+            best = raw
+        print("Полный HTML мал (", len(raw),
+              "байт) у пути", name, "— пробуем следующий")
+    if best:
+        remember_path("jina" if PATH_PREF[-1] == "jina" else PATH_PREF[0])
+    return best
 
 
 def find_brackets(s):
@@ -841,6 +904,7 @@ def hour_reminder(time_str, loc):
 
 def test_mode():
     """Тестовый прогон на сыгранном матче: только лог."""
+    init_path_pref()
     md = jina(MATCH_URL)
     if not md:
         print("Страница матча не скачалась")
@@ -875,6 +939,7 @@ def main():
     print("Telegram API через:", TG_API.rstrip("/")
           if TG_API.rstrip("/") != "https://api.telegram.org"
           else "напрямую (TG_API_URL не задан!)")
+    init_path_pref()
     now = datetime.now(MSK)
     if PAST_MATCH:
         test_mode()
