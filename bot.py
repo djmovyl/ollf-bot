@@ -411,6 +411,10 @@ def extract_match_info(md, html, t1, t2):
         return best[2], best[3], find_location(texts, date_positions)
     print("Строк с датой/временем не найдено")
     return None, None, "уточняется"
+    cands = [c for c in cands if c[0] > 0]
+    if not cands:
+        print("Шапок с нашими командами рядом не найдено")
+        return None, None, "уточняется"
 
 
 def page_datetime(md, html, t1, t2):
