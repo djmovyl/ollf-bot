@@ -957,7 +957,10 @@ def main():
         st["announced"] = tk
         save_state(st)
     # Напоминание за час до матча: окно 60 ± 2,5 минуты,
-    # чтобы гарантированно попасть между пятиминутными прогонами
+    # чтобы гарантированно попасть между пятиминутными прогонами.
+    # Локация обязательна: если не распозналась — откладываем до
+    # следующего прогона (в окне их 2-3). Последний шанс (dt_min <= 51) —
+    # шлём с пометкой «уточняется», чтобы канал не молчал.
     if time_known and st.get("hour1") != tk:
         dt_min = (t0 - now).total_seconds() / 60
         if 50 <= dt_min <= 62.5 and LOCATION != "уточняется":
@@ -967,10 +970,16 @@ def main():
             send(post)
             st["hour1"] = tk
             save_state(st)
-    if win and st.get("lineup") != tk and lineup:
-        send_lineup(lineup)
-        st["lineup"] = tk
-        save_state(st)
+        elif LOCATION == "уточняется":
+            print("Напоминание за час отложено: локация не распознана,"
+                  " до старта", format(dt_min, ".1f"), "минут")
+            if dt_min <= 51:
+                post = hour_reminder(TIME_STR, "уточняется")
+                print("---- НАПОМИНАНИЕ ЗА ЧАС (локация не найдена) ----")
+                print(post.replace("<b>", "").replace("</b>", ""))
+                send(post)
+                st["hour1"] = tk
+                save_state(st)
 
     our_names = set(n for _, n, _ in lineup) if lineup else set()
     if not our_names:
