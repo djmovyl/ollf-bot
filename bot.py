@@ -18,7 +18,7 @@ PAST_MATCH = True
 MATCH_URL = "https://ollf.ru/match/5905503"
 START_H, START_M = 18, 0
 DURATION_MIN = 75
-LINEUP_CHECK_BEFORE = 5
+LINEUP_CHECK_BEFORE = 20
 VK_TRANSLATION = "https://vkvideo.ru/@club154907309/all"
 # Ссылка на трансляцию: берём из секрета STREAM_URL, если задан,
 # иначе — запасная ссылка на канал VK
@@ -968,7 +968,7 @@ def main():
     # шлём с пометкой «уточняется», чтобы канал не молчал.
     if time_known and st.get("hour1") != tk:
         dt_min = (t0 - now).total_seconds() / 60
-        if 50 <= dt_min <= 62.5 and LOCATION != "уточняется":
+        if 0 <= dt_min <= 62.5 and LOCATION != "уточняется":
             post = hour_reminder(TIME_STR, LOCATION)
             print("---- НАПОМИНАНИЕ ЗА ЧАС ----")
             print(post.replace("<b>", "").replace("</b>", ""))
