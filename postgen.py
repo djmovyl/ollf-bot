@@ -180,17 +180,32 @@ def classify_goal(scored, our, opp, prev_our, prev_opp, minute,
     return "mid_trail"
 
 # ================= СТАТИСТИКА СТРАНИЦЫ ЗАЯВКИ =================
-MD_LINK = re.compile(r"!?
-$$
-" + r"([^
-$$
-]*)" + r"\]" + r"$" + r"[^)]*" + r"$")
+# ВАЖНО: скобки собираются из кодов символов, чтобы строка не обрывалась
+# при копировании кода из чата (квадратные скобки там съедались как
+# маркдаун-ссылка — отсюда были SyntaxError на этой строке).
+LB = chr(91)
+RB = chr(93)
+LP = chr(40)
+RP = chr(41)
 
 def _flatten_md(s):
     """Маркдаун в плоский текст: ссылки -> текст, таблицные | -> пробелы.
-    Нужен для разбора страницы заявки: Jina отдаёт таблицу с пайпами."""
-    s = MD_LINK.sub(lambda m: m.group(1), s)
-    return s.replace("|", " ")
+    Цикл вместо регэкспа — без квадратных скобок в исходнике."""
+    s = s.replace("|", " ")
+    while True:
+        a = s.find(LB)
+        if a < 0:
+            break
+        b = s.find(RB, a + 1)
+        if b < 0:
+            break
+        c = s.find(LP, b + 1)
+        d = s.find(RP, c + 1) if c >= 0 else -1
+        if c < 0 or d < 0:
+            break
+        start = a - 1 if a > 0 and s[a - 1] == chr(33) else a
+        s = s[:start] + s[a + 1:b] + s[d + 1:]
+    return s
 
 def _num(s):
     s = (s or "").strip()
@@ -198,11 +213,13 @@ def _num(s):
 
 # Строка заявки: 'Фамилия Имя ДД.ММ.ГГГГ, N лет(год/года) И Г П ЖК КК'.
 # Возраст пропускаем опционально, прочерки (в т.ч. длинные тире) в цифрах
+NUMCLS = LB + r"\d\-\u2013\u2014" + RB
 SQUAD_ROW_RE = re.compile(
-    r"([А-ЯЁ][а-яё]+ [А-ЯЁ][а-яё]+)\s+"
-    r"\d{2}\.\d{2}\.\d{4}\s*(?:,\s*\d+\s*год\S*)?\s*"
-    r"([\d\-\u2013\u2014]+)\s+([\d\-\u2013\u2014]+)\s+"
-    r"([\d\-\u2013\u2014]+)\s+([\d\-\u2013\u2014]+)\s+([\d\-\u2013\u2014]+)")
+    LP + LB + "А-ЯЁ" + RB + LB + "а-яё" + RB + "+ " + LB + "А-ЯЁ" + RB
+    + LB + "а-яё" + RB + "+" + RP + r"\s+"
+    + r"\d{2}\.\d{2}\.\d{4}\s*(?:,\s*\d+\s*год\S*)?\s*"
+    + NUMCLS + r"\s+" + NUMCLS + r"\s+" + NUMCLS + r"\s+"
+    + NUMCLS + r"\s+" + NUMCLS)
 
 def parse_squad_stats(text):
     flat = _flatten_md(text or "")
