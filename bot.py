@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.16 (21.11.2026)"
+VERSION = "bot-2.17 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -20,6 +20,9 @@ START_H, START_M = 18, 0
 DURATION_MIN = 75
 LINEUP_CHECK_BEFORE = 5
 VK_TRANSLATION = "https://vkvideo.ru/@club154907309/all"
+# Ссылка на трансляцию: берём из секрета STREAM_URL, если задан,
+# иначе — запасная ссылка на канал VK
+STREAM_URL = os.environ.get("STREAM_URL", VK_TRANSLATION)
 STATE_FILE = "prod_state.json"
 
 # Служебные константы для регулярок: избегаем опасных последовательностей
@@ -87,6 +90,14 @@ VENUE_CTX = re.compile(
 OUR_IS_HOME = True
 LOCATION = "уточняется"
 TIME_STR = "уточняется"
+
+
+def stream_link():
+    """Кликабельная строка 'Ссылка на трансляцию' или пустая строка,
+    если ссылка не задана."""
+    if not STREAM_URL:
+        return ""
+    return "📺 <a href=\"" + esc(STREAM_URL) + "\">Ссылка на трансляцию</a>"
 
 
 def tg(method, **p):
@@ -522,38 +533,6 @@ def cut_num(s, key):
         start = i + 1
 
 
-def find_stream_url(texts):
-    for text in texts:
-        if not text:
-            continue
-        t = text.replace("&amp;", "&")
-        for tok in (t.replace('"', " ").replace("'", " ")
-                    .replace("<", " ").replace(">", " ").split()):
-            low = tok.lower()
-            if "video_ext.php" in low:
-                oid = cut_num(tok, "oid=")
-                vid = cut_num(tok, "id=")
-                if oid and vid:
-                    return "https://vkvideo.ru/video" + oid + "_" + vid
-            if low.startswith("http"):
-                for key in ("vkvideo.ru/video", "vkvideo.ru/live",
-                            "vk.com/video", "vk.ru/video"):
-                    if key in low:
-                        return tok.rstrip(",;)]}.")
-    return None
-
-
-def get_stream(match_url, md):
-    burl = match_url + "?active=broadcast"
-    for attempt in range(3):
-        surl = find_stream_url([jina(burl, html=True), jina(burl), md])
-        if surl:
-            return surl
-        print("Трансляция не найдена, попытка", attempt + 1, "из 3")
-        time.sleep(10)
-    return None
-
-
 def md_events(md):
     out, score = [], [0, 0]
     for raw in md.splitlines():
@@ -758,15 +737,20 @@ def announcement(opponent, mdate, time_str, loc, standings_text=""):
             "🗓 Дата: " + ds + "\n"
             "⏱ Старт: " + time_str + " (МСК)\n"
             "🗺 Локация: " + esc(loc))
+    if STREAM_URL:
+        body += "\n\n" + stream_link()
     if standings_text:
         body += "\n\n" + standings_text
     return body + "\n\nСледите за обновлениями в нашей группе!"
 
 
 def hour_reminder(time_str, loc):
-    return ("⏰ <b>ИГРА УЖЕ СКОРО!</b>\n\n"
-            "⏱ Начало в <b>" + time_str + "</b> (МСК)\n\n"
-            "📍 <b>" + loc.upper() + "</b>")
+    s = ("⏰ <b>ИГРА УЖЕ СКОРО!</b>\n\n"
+         "⏱ Начало в <b>" + time_str + "</b> (МСК)\n\n"
+         "📍 <b>" + loc.upper() + "</b>")
+    if STREAM_URL:
+        s += "\n\n" + stream_link()
+    return s
 
 
 def test_mode():
@@ -952,16 +936,6 @@ def main():
         send_lineup(lineup)
         st["lineup"] = tk
         save_state(st)
-    if win and st.get("stream") != tk:
-        try:
-            surl = get_stream(match_url, md)
-            if surl:
-                send("📺 <b>А вот и ссылка на игру!</b>\n\n" + surl)
-                st["stream"] = tk
-                save_state(st)
-        except Exception:
-            print("Ошибка блока трансляции (продолжаем):")
-            print(traceback.format_exc())
 
     our_names = set(n for _, n, _ in lineup) if lineup else set()
     if not our_names:
