@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.24 (23.11.2026)"
+VERSION = "bot-2.25 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -95,7 +95,7 @@ TIME_STR = "уточняется"
 
 # Порядок путей загрузки страниц: перебираем по очереди, удачный путь
 # запоминаем в состоянии — следующий прогон начнёт с него
-PATH_PREF = ["worker", "allorigins", "direct", "jina"]
+PATH_PREF = ["worker", "allorigins", "codetabs", "direct", "jina"]
 
 
 def stream_link():
@@ -183,6 +183,20 @@ def proxy_fetch(url):
     return ""
 
 
+def codetabs_fetch(url):
+    """Путь через публичный прокси codetabs — без регистрации и ключей.
+    Возвращает сырой HTML или пустую строку."""
+    try:
+        r = requests.get("https://api.codetabs.com/v1/proxy",
+                         params={"quest": url}, timeout=40)
+        print("codetabs:", r.status_code, len(r.text))
+        if r.status_code == 200 and r.text.strip():
+            return r.text
+    except Exception as e:
+        print("codetabs error:", e)
+    return ""
+
+
 def direct_fetch(url, html=False):
     """Прямой запрос страницы, без посредников. Сайт OLLF отвечает
     анти-ботом (468) на серверные IP — тогда пустая строка."""
@@ -204,8 +218,8 @@ def direct_fetch(url, html=False):
 
 
 def jina_reader(url, html=False):
-    """Jina Reader без ключа. Доступ для анонимов дышит волнами:
-    то 401, то заглушки, то работает как сейчас."""
+    """Крайний случай: Jina Reader без ключа. Доступ для анонимов
+    дышит волнами: то 401, то заглушки, то работает."""
     h = {"X-Return-Format": "html" if html else "markdown",
          "X-Retain-Images": "none"}
     for _ in range(2):
@@ -233,7 +247,7 @@ def init_path_pref():
     try:
         st = load_state()
         p = st.get("fetch_path")
-        if p and len(p) == 4 and set(p) == set(PATH_PREF):
+        if p and set(p) == set(PATH_PREF):
             PATH_PREF = list(p)
             print("Порядок загрузки из состояния:", " -> ".join(PATH_PREF))
     except Exception:
@@ -258,8 +272,8 @@ def remember_path(name):
 
 def jina(url, html=False):
     """Общий загрузчик: перебираем пути в запомненном порядке —
-    Worker, прокси, прямой запрос, Jina Reader. Имя сохранено,
-    чтобы не править вызовы по всему файлу."""
+    Worker, прокси allorigins, прокси codetabs, прямой запрос,
+    Jina Reader. Имя сохранено, чтобы не править вызовы по всему файлу."""
     for name in list(PATH_PREF):
         if name == "worker":
             raw = worker_fetch(url)
@@ -270,6 +284,11 @@ def jina(url, html=False):
             raw = proxy_fetch(url)
             if raw:
                 remember_path("allorigins")
+                return raw if html else html_to_md(raw)
+        elif name == "codetabs":
+            raw = codetabs_fetch(url)
+            if raw:
+                remember_path("codetabs")
                 return raw if html else html_to_md(raw)
         elif name == "direct":
             d = direct_fetch(url, html=True)
@@ -294,6 +313,8 @@ def jina_full_html(url):
             raw = worker_fetch(url)
         elif name == "allorigins":
             raw = proxy_fetch(url)
+        elif name == "codetabs":
+            raw = codetabs_fetch(url)
         elif name == "direct":
             raw = direct_fetch(url, html=True)
         else:
