@@ -1105,7 +1105,7 @@ def test_mode():
               "season_stats": {}, "stats_synced_match_urls": []}
         sync_stats_safe(st, match_url=MATCH_URL)
         post_events(events, st, MATCH_URL, do_send=False)
-        else:
+    else:
         print("postgen.py не найден — посты не собраны")
 
 
