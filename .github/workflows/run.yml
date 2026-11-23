@@ -41,6 +41,7 @@ jobs:
           CHANNEL: ${{ secrets.CHANNEL }}
           TG_API_URL: ${{ secrets.TG_API_URL }}
           TG_PROXY_SECRET: ${{ secrets.TG_PROXY_SECRET }}
+          JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
 
       - name: Save bot state
         if: always()
