@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.19 (23.11.2026)"
+VERSION = "bot-2.20 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -220,6 +220,23 @@ def find_brackets(s):
 
 def strip_tags(html):
     return re.sub("<[^>]*>", " ", html)
+
+
+def html_text(html):
+    """HTML в текст: выкидываем script/style, снимаем теги."""
+    s = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html,
+               flags=re.I | re.S)
+    return strip_tags(s)
+
+
+def tables_text():
+    """Текст страницы таблиц: приоритет — полный HTML (порядок
+    колонок сохраняется), маркдаун Jina — запасной вариант:
+    он может терять числовые колонки у первой таблицы."""
+    html = jina_full_html(TABLES_URL)
+    if len(html) >= 50000:
+        return html_text(html)
+    return jina(TABLES_URL) or html_text(html)
 
 
 def flatten_table_md(s):
@@ -771,7 +788,7 @@ def test_mode():
     except Exception:
         print("Ошибка разбора шапки (продолжаем):")
         print(traceback.format_exc())
-    tmd = jina(TABLES_URL)
+    tmd = tables_text()
     if tmd:
         parse_standings(tmd, t1, t2)
     proto = jina(MATCH_URL + "?active=protocol")
@@ -909,7 +926,7 @@ def main():
             and st.get("announced") != tk):
         standings_text = ""
         try:
-            tmd = jina(TABLES_URL)
+            tmd = tables_text()
             if tmd:
                 standings = parse_standings(tmd, t1, t2)
                 standings_text = standings_block(standings, t1, t2)
