@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.34 (24.11.2026)"
+VERSION = "bot-2.35 (24.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -807,6 +807,24 @@ def score_text_for(sc):
     return "Счёт: <b>" + shown + "</b>. На табло ничья!"
 
 
+def final_score_from_page(md):
+    """Фолбэк итогового счёта из шапки страницы матча (зона до
+    'События матча'). Берём последний правдоподобный счёт: каждая
+    цифра не больше 15, чтобы не принять за счёт время '20:00'."""
+    if not md:
+        return None
+    idx = md.find("События матча")
+    zone = md[:idx] if idx > 0 else md
+    best = None
+    for m in re.finditer(r"(\d{1,2})\s*:\s*(\d{1,2})", zone):
+        a, b = int(m.group(1)), int(m.group(2))
+        if a <= 15 and b <= 15:
+            best = [a, b]
+    if best:
+        print("Счёт из шапки страницы:", best[0], ":", best[1])
+    return best
+
+
 def render_post(ev):
     m, p, a = ev["minute"], ev["player"], ev.get("assist")
     if ev["et"] == "goal":
@@ -1100,6 +1118,8 @@ def test_mode():
             info += " (пас: " + e["assist"] + ")"
         print("СОБЫТИЕ:", e["et"], str(e["minute"]) + "'",
               info, e["score"], "| наши:", e["ours"])
+    fs = final_score_from_page(md)
+    print("Фолбэк счёта из шапки:", fs)
     if pg is not None:
         st = {"seen": [], "last_tpl": None, "last_closer": None,
               "season_stats": {}, "stats_synced_match_urls": []}
@@ -1263,27 +1283,34 @@ def main():
         print("Матч уже закрыт в состоянии — выходим")
         return
 
-    # Окна. Если время матча неизвестно: анонс/состав —
-    # с 11:00 до вечера; итог — не раньше, чем через 85 минут после
-    # первого события (защита от преждевременного «МАТЧ ЗАВЕРШЁН»).
+    # Окна. Если время матча известно: анонс — с 11:00 (для утренних
+    # матчей — от T-20), состав — с T-20, старт и итог — по шапке.
+    # Если время неизвестно: анонс и состав — с 11:00 до конца дня,
+    # «МАТЧ НАЧАЛСЯ» — по первому событию, итог — не раньше, чем через
+    # 85 минут после первого события (защита от преждевременного
+    # «МАТЧ ЗАВЕРШЁН»).
+    end_of_day = now.replace(hour=23, minute=59, second=0,
+                             microsecond=0)
     if TIME_STR != "уточняется":
         t0 = now.replace(hour=START_H, minute=START_M,
                          second=0, microsecond=0)
         tend = t0 + timedelta(minutes=DURATION_MIN)
         win_start = t0 - timedelta(minutes=LINEUP_CHECK_BEFORE)
         time_known = True
+        ann_from = min(now.replace(hour=11, minute=0, second=0,
+                                   microsecond=0), win_start)
+        ann_until = tend
     else:
         t0 = now.replace(hour=18, minute=0, second=0, microsecond=0)
         tend = t0 + timedelta(minutes=DURATION_MIN)
         win_start = now.replace(hour=11, minute=0, second=0,
                                 microsecond=0)
         time_known = False
-    win = win_start <= now < tend
+        ann_from = win_start
+        ann_until = end_of_day
+    win = win_start <= now < ann_until
 
-    if (now < tend
-            and (now >= now.replace(hour=11, minute=0, second=0,
-                                    microsecond=0) or now >= t0)
-            and st.get("announced") != tk):
+    if now < ann_until and now >= ann_from and st.get("announced") != tk:
         standings_text = ""
         try:
             tmd = tables_text()
@@ -1340,8 +1367,8 @@ def main():
         if events and not st.get("first_ts"):
             st["first_ts"] = time.time()
         save_state(st)
-        send("🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n🆚 <b>" + t1 + " vs " + t2
-             + "</b>\n\nДержим кулаки за команду! 👊")
+        send("🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n🆚 <b>" + esc(t1) + " vs "
+             + esc(t2) + "</b>\n\nДержим кулаки за команду! 👊")
 
     # Публикация: постген с фолбэком в старый формат
     post_events(events, st, match_url)
@@ -1350,7 +1377,9 @@ def main():
     save_state(st)
 
     # Итог: если время известно — после старта+75 минут;
-    # если нет — не раньше, чем через 85 минут после первого события
+    # если нет — не раньше, чем через 85 минут после первого события.
+    # Счёт: из событий, а если событий не было — фолбэк из шапки
+    # страницы матча (защита от ложного '0:0').
     if st.get("started") and not st.get("final"):
         if time_known:
             final_ok = now > tend
@@ -1361,9 +1390,15 @@ def main():
             final_ok = False
         if final_ok:
             st["final"] = True
+            if not events:
+                page_sc = final_score_from_page(md)
+                if page_sc:
+                    st["score"] = page_sc
             save_state(st)
             sc = st["score"]
             our, opp = (sc[0], sc[1]) if OUR_IS_HOME else (sc[1], sc[0])
+            our_team = t1 if OUR_IS_HOME else t2
+            opp_team = t2 if our_team == t1 else t1
             if our > opp:
                 verdict = "🎉 <b>ПОБЕДА!</b> 🎉"
             elif our < opp:
@@ -1371,7 +1406,8 @@ def main():
             else:
                 verdict = "🤝 <b>НИЧЬЯ</b> 🤝"
             send("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n📊 Итоговый счёт: <b>"
-                 + str(sc[0]) + " : " + str(sc[1]) + "</b>\n\n" + verdict
+                 + esc(our_team) + " " + str(our) + ":" + str(opp)
+                 + " " + esc(opp_team) + "</b>\n\n" + verdict
                  + "\n\nСпасибо за игру, команду! 🤝")
             # Финальный синк: страница заявки уже включает сыгранный матч
             sync_stats_safe(st, force=True, match_url=match_url)
