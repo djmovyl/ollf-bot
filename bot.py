@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.31 (23.11.2026)"
+VERSION = "bot-2.32 (23.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -913,8 +913,7 @@ def hour_reminder(time_str, loc):
         loc_line = "📍 <b>" + esc(loc).upper() + "</b>"
     else:
         loc_line = ("📍 <b>Локация уточняется</b> — гляньте в календаре "
-                    "турнира: " + esc("https://ollf.ru/tournament/1067343"
-                                      "/calendar"))
+                    "турнира: " + esc(CALENDAR_URL))
     return ("⏰ <b>ИГРА УЖЕ СКОРО!</b>\n\n"
             "⏱ Начало в <b>" + time_str + "</b> (МСК)\n\n" + loc_line)
 
@@ -953,6 +952,7 @@ def test_mode():
 def main():
     global OUR_IS_HOME, START_H, START_M, TIME_STR
     print("ВЕРСИЯ КОДА:", VERSION)
+    print("Режим:", "ТЕСТ (только лог)" if PAST_MATCH else "БОЕВОЙ")
     print("Telegram API через:", TG_API.rstrip("/")
           if TG_API.rstrip("/") != "https://api.telegram.org"
           else "напрямую (TG_API_URL не задан!)")
