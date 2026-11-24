@@ -24,7 +24,10 @@ OUR_KEY = "ITPROVIDER"
 #   "test_live" -> тест: РЕПЛЕЙ полного матч-дня на MATCH_URL,
 #                  все посты (анонс, напоминание, состав, старт,
 #                  события, итог) реально уходят в канал
-MODE = "test_live"
+# Режим берём из окружения: ручной запуск workflow (workflow_dispatch)
+# получает test_live (реплей), плановые прогоны по cron — боевой prod.
+# Значение в коде — только фолбэк для локального запуска.
+MODE = os.environ.get("BOT_MODE", "prod")
 # Для совместимости со старыми проверками
 PAST_MATCH = MODE != "prod"
 MATCH_URL = "https://ollf.ru/match/5905514"
