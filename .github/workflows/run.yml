@@ -39,6 +39,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL: ${{ secrets.CHANNEL }}
+          CHANNEL_2: ${{ secrets.CHANNEL_2 }}
           TG_API_URL: ${{ secrets.TG_API_URL }}
           TG_PROXY_SECRET: ${{ secrets.TG_PROXY_SECRET }}
           JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
