@@ -24,7 +24,7 @@ OUR_KEY = "ITPROVIDER"
 #   "test_live" -> тест: РЕПЛЕЙ полного матч-дня на MATCH_URL,
 #                  все посты (анонс, напоминание, состав, старт,
 #                  события, итог) реально уходят в канал
-MODE = "test_log"
+MODE = "test_live"
 # Для совместимости со старыми проверками
 PAST_MATCH = MODE != "prod"
 MATCH_URL = "https://ollf.ru/match/5905514"
