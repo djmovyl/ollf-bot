@@ -1155,7 +1155,7 @@ def final_post_text(sc, our_team, opp_team):
             + esc(our_team) + " — " + esc(opp_team) + "\n\n"
             + score_big(sc) + "\n\n"
             + emj + " <b>" + verdict + "</b> " + emj
-            + "\n\nСпасибо за игру, команду! 💙")
+            + "\n\nСпасибо за игру, команда! 💙")
 
 
 def started_post_text(t1, t2):
