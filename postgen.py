@@ -4,7 +4,12 @@
 
 Единое оформление всех постов:
   эмодзи + ЖИРНЫЙ заголовок -> минута -> действие -> КРУПНЫЙ счёт
-  -> сезонная справка -> клише. Разделителей-линий нет."""
+  -> сезонная справка -> клише. Разделителей-линий нет.
+
+Имена игроков во всех постах — только в именительном падеже: клише
+построены так, что склонять ничего не нужно. В сезонной справке
+фигурирует только имя (без фамилии) — фамилия уже прозвучала выше,
+в строке действия."""
 
 import re
 import random
@@ -311,35 +316,45 @@ def season_count(state, player, kind, match_extra, match_url=""):
         return n
     return n + match_extra
 
+def first_name(full_name):
+    """Имя без фамилии: протокол даёт 'Фамилия Имя', берём последнее
+    слово. Используется в сезонной справке — фамилия уже прозвучала
+    в строке действия, повторять её второй раз не нужно."""
+    if not full_name:
+        return ""
+    return full_name.split()[-1] if " " in full_name else full_name
+
 # ================= ШАБЛОНЫ: НАШ ГОЛ (С ПАСОМ) =================
+# Имена только в именительном падеже — клише построены так,
+# что склонять ничего не нужно.
 SCORED_ASSIST_TEMPLATES = [
-    "🔥 <b>ГО-О-О-Л!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> забивает"
-    " — с паса <b>{assister}</b>.\n\n{score}{stats}\n\n{closer}",
-    "⚽ <b>ЕСТЬ ГОЛ!</b>\n\n⏱ {minute}' минута\n\nГол на счету "
-    "<b>{scorer}</b>, пас отдал <b>{assister}</b>.\n\n{score}{stats}\n\n"
+    "🔥 <b>ГО-О-О-Л!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> забивает! "
+    "Голевой пас — <b>{assister}</b>.\n\n{score}{stats}\n\n{closer}",
+    "⚽ <b>ЕСТЬ ГОЛ!</b>\n\n⏱ {minute}' минута\n\nАвтор мяча — "
+    "<b>{scorer}</b>. Автор паса — <b>{assister}</b>.\n\n{score}{stats}\n\n"
     "{closer}",
-    "💥 <b>ЗАБИВАЕМ!</b>\n\n⏱ {minute}' минута\n\nАвтор мяча — "
-    "<b>{scorer}</b>. Голевой пас: <b>{assister}</b>.\n\n{score}{stats}\n\n"
-    "{closer}",
+    "💥 <b>ЗАБИВАЕМ!</b>\n\n⏱ {minute}' минута\n\nГол: <b>{scorer}</b>. "
+    "Пас: <b>{assister}</b>.\n\n{score}{stats}\n\n{closer}",
     "🎉 <b>ТАБЛО ОБНОВЛЯЕТСЯ!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b>"
-    " записывает гол на свой счёт — ассист <b>{assister}</b>.\n\n{score}"
-    "{stats}\n\n{closer}",
+    " записывает гол на свой счёт. Ассистент — <b>{assister}</b>.\n\n"
+    "{score}{stats}\n\n{closer}",
     "✨ <b>ОТЛИЧНОЕ ИСПОЛНЕНИЕ!</b>\n\n⏱ {minute}' минута\n\nМяч в воротах "
-    "соперника! Автор — <b>{scorer}</b>, пас — <b>{assister}</b>.\n\n"
+    "соперника! Гол — <b>{scorer}</b>, пас — <b>{assister}</b>.\n\n"
     "{score}{stats}\n\n{closer}",
     "🚀 <b>ЕЩЁ ОДИН В НАШУ КОПИЛКУ!</b>\n\n⏱ {minute}' минута\n\n"
-    "<b>{scorer}</b> забивает. Пас отдал <b>{assister}</b>.\n\n{score}"
+    "<b>{scorer}</b> забивает. Ассистент — <b>{assister}</b>.\n\n{score}"
     "{stats}\n\n{closer}",
-    "💪 <b>НАШ ГОЛ!</b>\n\n⏱ {minute}' минута\n\nОтличился <b>{scorer}</b>"
-    " — передача от <b>{assister}</b>.\n\n{score}{stats}\n\n{closer}",
+    "💪 <b>НАШ ГОЛ!</b>\n\n⏱ {minute}' минута\n\nОтличная связка: "
+    "<b>{scorer}</b> забивает, <b>{assister}</b> отдаёт пас.\n\n{score}"
+    "{stats}\n\n{closer}",
     "🎯 <b>В СЕТКУ!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> поражает "
-    "ворота соперника. Ассист: <b>{assister}</b>.\n\n{score}{stats}\n\n"
-    "{closer}",
+    "ворота соперника. Голевой пас — <b>{assister}</b>.\n\n{score}"
+    "{stats}\n\n{closer}",
     "💥 <b>СНОВА В ДЕЛЕ!</b>\n\n⏱ {minute}' минута\n\nГол забит! Автор — "
-    "<b>{scorer}</b>, автор паса — <b>{assister}</b>.\n\n{score}{stats}\n\n"
+    "<b>{scorer}</b>, пас — <b>{assister}</b>.\n\n{score}{stats}\n\n"
     "{closer}",
     "⚡ <b>МЯЧ В ВОРОТАХ СОПЕРНИКА!</b>\n\n⏱ {minute}' минута\n\nЗабивает "
-    "<b>{scorer}</b> — с передачи <b>{assister}</b>.\n\n{score}{stats}\n\n"
+    "<b>{scorer}</b>! Пас — <b>{assister}</b>.\n\n{score}{stats}\n\n"
     "{closer}"]
 
 # ================= ШАБЛОНЫ: НАШ ГОЛ (БЕЗ ПАСА) =================
@@ -450,23 +465,43 @@ CLOSERS["milestone_a3"] = [
 CLOSERS["milestone_a4"] = ["Покер ассистента — фантастика!"]
 CLOSERS["milestone_a5"] = ["Пента-ассист — легенда вечера!"]
 
+# Первый гол игрока в чемпионате — особый пост. Ветка срабатывает
+# только когда сезонная статистика реально распознана (sg == 1
+# включает текущий гол); если заявка не скачалась — выйдет обычный пост.
+MILESTONE_G1_TEMPLATES = [
+    "🎉 <b>ПЕРВЫЙ ГОЛ В СЕЗОНЕ!</b>\n\n⏱ {minute}' минута\n\n{scorer} "
+    "открывает счёт своим голам в чемпионате!{assist_line}\n\n{score}"
+    "{stats}\n\n{closer}",
+    "🌟 <b>ДЕБЮТНЫЙ МЯЧ!</b>\n\n⏱ {minute}' минута\n\n{scorer} забивает "
+    "свой первый гол в этом чемпионате!{assist_line}\n\n{score}{stats}"
+    "\n\n{closer}",
+    "🥇 <b>ПЕРВЫЙ МЯЧ В СЕЗОНЕ!</b>\n\n⏱ {minute}' минута\n\n{scorer} "
+    "записывает первый гол в чемпионате на свой счёт!{assist_line}"
+    "\n\n{score}{stats}\n\n{closer}"]
+
+CLOSERS["milestone_g1"] = [
+    "Первый мяч — самый важный. Дальше — больше!",
+    "С первого гола и до последнего — вперёд!",
+    "Начало положено — не останавливаемся!",
+    "Первый гол — всегда особенный! Поздравляем!"]
+
 MILESTONE_G_TEMPLATES = [
     "🎩 <b>{ms_name}!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> "
     "оформляет {ms_lower} — {n}-й мяч в этом матче!{assist_line}\n\n"
     "{score}{stats}\n\n{closer}",
-    "💥 <b>{ms_name}!</b>\n\n⏱ {minute}' минута\n\n{n}-й мяч в этом матче "
-    "— на счету <b>{scorer}</b>!{assist_line}\n\n{score}{stats}\n\n{closer}",
+    "💥 <b>{ms_name}!</b>\n\n⏱ {minute}' минута\n\nАвтор {n}-го мяча — "
+    "<b>{scorer}</b>!{assist_line}\n\n{score}{stats}\n\n{closer}",
     "🔥 <b>{ms_name}!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> "
     "продолжает поражать: теперь {n} {n_word} за матч!{assist_line}\n\n"
     "{score}{stats}\n\n{closer}"]
 
 MILESTONE_A_TEMPLATES = [
-    "🧠 <b>РАЗДАЮТ МЯЧИ!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> "
-    "забивает — {assist_ms} на счету <b>{assister}</b>!\n\n{score}{stats}"
-    "\n\n{closer}",
-    "🎯 <b>ГОЛЕВОЙ ПАС В ДЕЛЕ!</b>\n\n⏱ {minute}' минута\n\nГол на счету "
-    "<b>{scorer}</b>, а <b>{assister}</b> оформляет {assist_ms} в этом "
-    "матче!\n\n{score}{stats}\n\n{closer}"]
+    "🧠 <b>РАЗДАЮТ МЯЧИ!</b>\n\n⏱ {minute}' минута\n\nГол забивает "
+    "{scorer}. {assist_ms} оформляет <b>{assister}</b>!\n\n{score}"
+    "{stats}\n\n{closer}",
+    "🎯 <b>ГОЛЕВОЙ ПАС В ДЕЛЕ!</b>\n\n⏱ {minute}' минута\n\nГол: "
+    "{scorer}. Ассистент: <b>{assister}</b> — {assist_ms}!\n\n{score}"
+    "{stats}\n\n{closer}"]
 
 # ================= КАРТОЧКИ =================
 CARD_TEMPLATES = {
@@ -567,14 +602,6 @@ def plural(n, one, few, many):
     return many
 
 # ================= СБОРКА ПОСТОВ =================
-def _stat_goals(n):
-    return ("📊 " + str(n) + "-й гол в чемпионате") \
-        if n is not None else ""
-
-def _stat_assists(n):
-    return ("🎯 " + str(n) + "-я передача в сезоне") \
-        if n is not None else ""
-
 def build_goal_post(state, scored, scorer, assister, minute, our, opp,
                     prev_our, prev_opp, prev_goal, we_led_before,
                     minutes_since, scorer_match_goals=0,
@@ -593,17 +620,43 @@ def build_goal_post(state, scored, scorer, assister, minute, our, opp,
         scorer_b = "<b>" + esc(scorer) + "</b>"
         sg = season_count(state, scorer, "goals", scorer_match_goals,
                           match_url)
-        parts = []
+        # --- ПЕРВЫЙ ГОЛ ИГРОКА В ЧЕМПИОНАТЕ ---
+        # sg == 1: до этого матча голов не было, сезонная цифра
+        # включает текущий гол. Строка '1-й гол' в справке не нужна —
+        # об этом говорит сам заголовок.
+        if sg == 1:
+            assist_line = ""
+            stats_lines = []
+            if assister:
+                aa = season_count(state, assister, "assists",
+                                  assister_match_assists, match_url)
+                assist_line = " Пас — <b>" + esc(assister) + "</b>."
+                if aa is not None:
+                    stats_lines.append("🎯 " + esc(first_name(assister))
+                                       + " — " + str(aa)
+                                       + "-я передача в сезоне")
+            stats_block = ("\n\n" + "\n".join(stats_lines)) \
+                if stats_lines else ""
+            closer = pick_closer(state, "milestone_g1")
+            tpl = pick_tpl(state, MILESTONE_G1_TEMPLATES)
+            return tpl.format(scorer=scorer_b, assist_line=assist_line,
+                              minute=minute, score=score,
+                              stats=stats_block, closer=closer)
+        # --- СЕЗОННАЯ СПРАВКА СТОЛБИКОМ, ТОЛЬКО ИМЕНА ---
+        stats_lines = []
         if sg is not None:
-            parts.append(_stat_goals(sg))
+            stats_lines.append("📊 " + esc(first_name(scorer)) + " — "
+                               + str(sg) + "-й гол в чемпионате")
         assist_line = ""
         if assister:
             aa = season_count(state, assister, "assists",
                               assister_match_assists, match_url)
-            assist_line = " — с паса <b>" + esc(assister) + "</b>"
+            assist_line = " Пас — <b>" + esc(assister) + "</b>."
             if aa is not None:
-                parts.append(_stat_assists(aa))
-        stats_block = ("\n\n" + " · ".join(parts)) if parts else ""
+                stats_lines.append("🎯 " + esc(first_name(assister))
+                                   + " — " + str(aa)
+                                   + "-я передача в сезоне")
+        stats_block = ("\n\n" + "\n".join(stats_lines)) if stats_lines else ""
         # милстоун забившего — приоритет перед пас-милстоуном
         if scorer_ms:
             if scorer_ms > 5:
@@ -625,7 +678,7 @@ def build_goal_post(state, scored, scorer, assister, minute, our, opp,
                                  "milestone_a" + str(min(assist_ms, 5)))
             tpl = pick_tpl(state, MILESTONE_A_TEMPLATES)
             return tpl.format(scorer=scorer_b,
-                              assister="<b>" + esc(assister) + "</b>",
+                              assister=esc(assister),
                               minute=minute, score=score,
                               stats=stats_block,
                               assist_ms=MILESTONE_ASSIST_LOWER.get(
@@ -698,6 +751,8 @@ def run_demo():
         ("goal", True, 35, "Харисов Алмаз", "Калякулин Даниил", 3, 3),
         ("goal", True, 38, "Ираев Максим", "Харисов Алмаз", 4, 3),
         ("goal", False, 40, "?", None, 4, 4),
+        # первый гол Закирова в чемпионате — сработает ветка G1
+        ("goal", True, 44, "Закиров Ильнар", "Харисов Алмаз", 5, 4),
         ("autogoal", True, 12, "автогол", None, 0, 0),
         ("yellow", True, 18, "Закиров Ильнар", None, 0, 0),
         ("red", True, 39, "Семёнов Александр", None, 0, 0)]
