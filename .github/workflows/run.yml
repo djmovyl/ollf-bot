@@ -44,6 +44,9 @@ jobs:
           TG_PROXY_SECRET: ${{ secrets.TG_PROXY_SECRET }}
           JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
           STREAM_URL: ${{ secrets.STREAM_URL }}
+          # Ручной запуск (кнопка) -> реплей test_live,
+          # плановый прогон по cron -> боевой prod
+          BOT_MODE: ${{ github.event_name == 'workflow_dispatch' && 'test_live' || 'prod' }}
 
       - name: Save bot state
         if: always()
