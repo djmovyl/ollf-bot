@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.38 (24.11.2026)"
+VERSION = "bot-2.39 (24.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -126,6 +126,17 @@ TIME_STR = "уточняется"
 # Порядок путей загрузки страниц: перебираем по очереди, удачный путь
 # запоминаем в состоянии — следующий прогон начнёт с него
 PATH_PREF = ["worker", "allorigins", "codetabs", "direct", "jina"]
+
+# Крупный счёт: кейкап-цифры. Основная реализация — в postgen,
+# здесь локальный фолбэк на случай, если postgen не найден
+KEYCAP = "0️⃣1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣8️⃣9️⃣"
+
+
+def score_big(sc):
+    """Счёт эмодзи-цифрами: (4,3) -> '4️⃣ : 3️⃣'."""
+    def digits(n):
+        return " ".join(KEYCAP[int(c)] for c in str(n))
+    return digits(sc[0]) + " : " + digits(sc[1])
 
 
 def stream_link():
@@ -719,13 +730,13 @@ def our_lineup(md, proto):
 def send_lineup(players):
     lines = []
     for num, name, mark in players:
-        s = "№" + str(num) + " " + name
+        s = "№" + str(num) + " <b>" + esc(name) + "</b>"
         if mark == "ВР":
             s += " 🧤"
         elif "К" in mark:
             s += " 🅺"
-        lines.append(esc(s))
-    send("📋 <b>Наш состав на сегодняшнюю игру</b>\n\n"
+        lines.append(s)
+    send("📋 <b>НАШ СОСТАВ НА СЕГОДНЯШНЮЮ ИГРУ</b>\n\n"
          + "\n".join(lines) + "\n\nВ бой, ITPROVIDER! 💪")
 
 
@@ -827,16 +838,6 @@ def classify_card(html, tstr, player):
     return "yellow", frag
 
 
-def score_text_for(sc):
-    our, opp = (sc[0], sc[1]) if OUR_IS_HOME else (sc[1], sc[0])
-    shown = str(sc[0]) + " : " + str(sc[1])
-    if our > opp:
-        return "Счёт: <b>" + shown + "</b> в нашу пользу! 🎉"
-    if our < opp:
-        return "Счёт: <b>" + shown + "</b>. Не сдаёмся! 💪"
-    return "Счёт: <b>" + shown + "</b>. На табло ничья!"
-
-
 def final_score_from_page(md):
     """Фолбэк итогового счёта из шапки страницы матча (зона до
     'События матча'). Берём последний правдоподобный счёт: каждая
@@ -856,38 +857,61 @@ def final_score_from_page(md):
 
 
 def render_post(ev):
-    m, p, a = ev["minute"], ev["player"], ev.get("assist")
+    """Фолбэк-посты в новом едином стиле (если postgen недоступен):
+    заголовок жирным -> минута -> действие -> счёт кейкапами -> клише.
+    Без разделителей-линий."""
+    m = ev["minute"]
+    ml = "⏱ " + str(m) + "' минута"
+    p_b = "<b>" + esc(ev["player"]) + "</b>" \
+        if ev.get("player") and ev["player"] != "?" else "игрок"
     if ev["et"] == "goal":
-        st = score_text_for(ev["score"])
+        sc = score_big(ev["score"])
         if ev["ours"]:
-            pas = "🎯 Голевой пас: " + a + "\n" if a else ""
-            return ("🔥⚽️ <b>Г-О-О-О-Л! 🔥⚽️</b>\n\n"
-                    "⚽ <b>" + p + " ЗАБИВАЕТ!</b> 🌟\n" + pas
-                    + "⏱ На " + str(m) + "' минуте!\n\n" + st)
-        return ("😢 <b>Пропускаем...</b> 😢\n\n"
-                "На " + str(m) + "' минуте соперник забивает.\n\n" + st)
+            if ev.get("assist"):
+                act = (p_b + " забивает — с паса <b>"
+                       + esc(ev["assist"]) + "</b>.")
+            else:
+                act = p_b + " забивает."
+            head = "🔥 <b>ГО-О-О-Л!</b>"
+            closer = "Кто верил — тот не зря верил! 🔥"
+        else:
+            act = "Соперник делает счёт."
+            head = "🥅 <b>ГОЛ В НАШИ ВОРОТА</b>"
+            closer = "Отстаём — значит, пора прибавить! 💪"
+        return head + "\n\n" + ml + "\n\n" + act + "\n\n" + sc \
+            + "\n\n" + closer
     if ev["et"] == "yellow":
         if ev["ours"]:
-            return ("🟡 <b>ЖЁЛТАЯ КАРТОЧКА у нас</b>\n\n🟡 " + p
-                    + "\n⏱ На " + str(m) + "' минуте.")
-        return ("🟡 <b>Жёлтая карточка у соперника</b>\n\n⏱ На "
-                + str(m) + "' минуте.")
+            head = "🟡 <b>ПРЕДУПРЕЖДЕНИЕ У НАС</b>"
+            act = p_b + " получает жёлтую карточку."
+            closer = "Держим голову холодной — впереди ещё игра! ⏳"
+        else:
+            head = "🟡 <b>ЖЁЛТАЯ У СОПЕРНИКА</b>"
+            act = "Предупреждение получает " + p_b + "."
+            closer = "Сопернику горячо — используем! 💪"
+        return head + "\n\n" + ml + "\n\n" + act + "\n\n" + closer
     if ev["et"] == "red":
         if ev["ours"]:
-            return ("🚨 <b>КРАСНАЯ КАРТОЧКА — УДАЛЕНИЕ У НАС</b>\n\n🔴 "
-                    + p + "\n⏱ На " + str(m) + "' минуте.")
-        return ("🚨 <b>КРАСНАЯ КАРТОЧКА У СОПЕРНИКА!</b>\n\n⏱ На "
-                + str(m) + "' минуте.")
+            head = "🚨 <b>КРАСНАЯ КАРТОЧКА У НАС</b>"
+            act = p_b + " покидает поле."
+            closer = "Играем в меньшинстве — держим строй! 🛡️"
+        else:
+            head = "🚨 <b>УДАЛЕНИЕ У СОПЕРНИКА</b>"
+            act = p_b + " получает красную."
+            closer = "Остались в большинстве — давим! 🔥"
+        return head + "\n\n" + ml + "\n\n" + act + "\n\n" + closer
     if ev["et"] == "autogoal":
-        cur = ev["score"]
-        our, opp = (cur[0], cur[1]) if OUR_IS_HOME else (cur[1], cur[0])
+        sc = score_big(ev["score"])
         if ev["ours"]:
-            return ("⚽ <b>Автогол — в нашу пользу!</b>\n\n"
-                    "На " + str(m) + "' минуте счёт: <b>"
-                    + str(our) + ":" + str(opp) + "</b>")
-        return ("🥅 <b>Автогол в наши ворота</b>\n\n"
-                "На " + str(m) + "' минуте счёт: <b>"
-                + str(our) + ":" + str(opp) + "</b>")
+            head = "⚽ <b>АВТОГОЛ — В НАШУ ПОЛЬЗУ!</b>"
+            act = "Соперник срезает мяч в свои ворота."
+            closer = "Гол есть гол — записываем!"
+        else:
+            head = "🥅 <b>АВТОГОЛ В НАШИ ВОРОТА</b>"
+            act = "Мяч после рикошета оказывается в нашей сетке."
+            closer = "Бывает. Никого не виним — идём дальше!"
+        return head + "\n\n" + ml + "\n\n" + act + "\n\n" + sc \
+            + "\n\n" + closer
     return None
 
 
@@ -1115,23 +1139,25 @@ def hour_reminder(time_str, loc):
 
 def final_post_text(sc, our_team, opp_team):
     """Текст «МАТЧ ЗАВЕРШЁН» — общий для боевого режима и реплея,
-    чтобы в канале не было расхождений."""
+    чтобы в канале не было расхождений. Единый стиль оформления:
+    счёт кейкап-цифрами на отдельном абзаце — самый крупный элемент."""
     our, opp = (sc[0], sc[1]) if OUR_IS_HOME else (sc[1], sc[0])
     if our > opp:
-        verdict = "🎉 <b>ПОБЕДА!</b> 🎉"
+        verdict, emj = "ПОБЕДА!", "🎉"
     elif our < opp:
-        verdict = "😔 <b>ПОРАЖЕНИЕ</b> 😔"
+        verdict, emj = "ПОРАЖЕНИЕ", "😔"
     else:
-        verdict = "🤝 <b>НИЧЬЯ</b> 🤝"
-    return ("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n📊 Итоговый счёт: <b>"
-            + esc(our_team) + " " + str(our) + ":" + str(opp)
-            + " " + esc(opp_team) + "</b>\n\n" + verdict
-            + "\n\nСпасибо за игру, команду! 🤝")
+        verdict, emj = "НИЧЬЯ", "🤝"
+    return ("🏁 <b>МАТЧ ЗАВЕРШЁН!</b>\n\n"
+            + esc(our_team) + " — " + esc(opp_team) + "\n\n"
+            + score_big(sc) + "\n\n"
+            + emj + " <b>" + verdict + "</b> " + emj
+            + "\n\nСпасибо за игру, команду! 💙")
 
 
 def started_post_text(t1, t2):
     """Текст «МАТЧ НАЧАЛСЯ» — общий для боевого режима и реплея."""
-    return ("🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n🆚 <b>" + esc(t1) + " vs "
+    return ("🏟️ <b>МАТЧ НАЧАЛСЯ!</b>\n\n🆚 <b>" + esc(t1) + " — "
             + esc(t2) + "</b>\n\nДержим кулаки за команду! 👊")
 
 
@@ -1250,7 +1276,7 @@ def replay_full():
         print("СОБЫТИЕ:", e["et"], str(e["minute"]) + "'",
               info, e["score"], "| наши:", e["ours"])
     if pg is None:
-        print("postgen.py не найден — события пойдут старым форматом")
+        print("postgen.py не найден — события пойдут фолбэк-форматом")
     st = {"seen": [], "last_tpl": None, "last_closer": None,
           "season_stats": {}, "stats_synced_match_urls": []}
     sync_stats_safe(st, match_url=MATCH_URL)
@@ -1523,7 +1549,7 @@ def main():
         save_state(st)
         send(started_post_text(t1, t2))
 
-    # Публикация: постген с фолбэком в старый формат
+    # Публикация: постген с фолбэком в единый фолбэк-формат
     post_events(events, st, match_url)
     if events:
         st["score"] = events[-1]["score"]
