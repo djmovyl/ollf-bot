@@ -1,10 +1,13 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.37 (24.11.2026)"
+VERSION = "bot-2.38 (24.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
+# Вторая группа-зеркало: посты дублируются туда, если секрет задан.
+# Если CHANNEL_2 пуст — бот просто шлёт только в основную группу
+CHANNEL_2 = os.environ.get("CHANNEL_2", "")
 # Адрес Telegram API: через Cloudflare Worker, если задан TG_API_URL
 TG_API = os.environ.get("TG_API_URL", "https://api.telegram.org")
 # Секрет прокси из воркера (заголовок x-proxy-secret)
@@ -21,7 +24,7 @@ OUR_KEY = "ITPROVIDER"
 #   "test_live" -> тест: РЕПЛЕЙ полного матч-дня на MATCH_URL,
 #                  все посты (анонс, напоминание, состав, старт,
 #                  события, итог) реально уходят в канал
-MODE = "test_live"
+MODE = "test_log"
 # Для совместимости со старыми проверками
 PAST_MATCH = MODE != "prod"
 MATCH_URL = "https://ollf.ru/match/5905514"
@@ -161,12 +164,15 @@ def send(text):
     if MODE == "test_live":
         print("[ТЕСТ-ЛАЙВ] Отправляю в канал:")
         print(text.replace("<b>", "").replace("</b>", ""))
-    res = tg("sendMessage", chat_id=CHANNEL, text=text[:3900],
-             parse_mode="HTML")
-    if not res.get("ok"):
-        print("Telegram error:", res)
-    elif MODE == "test_live":
-        print("[ТЕСТ-ЛАЙВ] Отправлено: да")
+    for ch in (CHANNEL, CHANNEL_2):
+        if not ch:
+            continue
+        res = tg("sendMessage", chat_id=ch, text=text[:3900],
+                 parse_mode="HTML")
+        if not res.get("ok"):
+            print("Telegram error (" + str(ch) + "):", res)
+        elif MODE == "test_live":
+            print("[ТЕСТ-ЛАЙВ] Отправлено в", str(ch) + ": да")
 
 
 def html_to_md(raw):
