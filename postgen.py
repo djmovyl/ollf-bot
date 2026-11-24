@@ -1,17 +1,29 @@
 # -*- coding: utf-8 -*-
 """postgen.py — генератор постов FC ITPROVIDER (голы, ассисты, милстоуны,
-карточки, автоголы) + кэш сезонной статистики со страницы заявки ОЛЛФ."""
+карточки, автоголы) + кэш сезонной статистики со страницы заявки ОЛЛФ.
+
+Единое оформление всех постов:
+  эмодзи + ЖИРНЫЙ заголовок -> минута -> действие -> КРУПНЫЙ счёт
+  -> сезонная справка -> клише. Разделителей-линий нет."""
 
 import re
 import random
 from datetime import date
 
-SEP = "─" * 40
 EARLY_MIN = 3    # до 3-й минуты включительно — ранний гол
 LATE_MIN = 38    # с 38-й минуты — концовка (последние 3 минуты матча 2x20)
 
 TEAM_STATS_URL = ("https://ollf.ru/tournament/1067343/teams/"
                   "application?team_id=1381365")
+
+# ================= КРУПНЫЙ СЧЁТ =================
+KEYCAP = "0️⃣1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣8️⃣9️⃣"
+
+def score_big(our, opp):
+    """Счёт эмодзи-цифрами (кейкапы) — визуально крупнее текста."""
+    def digits(n):
+        return " ".join(KEYCAP[int(c)] for c in str(n))
+    return digits(our) + " : " + digits(opp)
 
 # ================= КЛИШЕ (финальные строки) =================
 CLOSERS = {
@@ -297,126 +309,108 @@ def season_count(state, player, kind, match_extra, match_url=""):
         return n
     return n + match_extra
 
-# ================= КАРКАСЫ: НАШ ГОЛ =================
-SCORED_TEMPLATES = [
-    "🔥 ГО-О-О-Л!\n\nНа {minute}' минуте отличился {scorer}!{scorer_stat}\n"
-    "🎯 Голевой пас: {assister}{assist_stat}\nСчёт: <b>{our}:{opp}</b>\n"
-    + SEP + "\n\n{closer}",
-    "⚽ ЕСТЬ ГОЛ!\n\n{scorer} забивает на {minute}' минуте!{scorer_stat}\n"
-    "🎯 Голевой пас: {assister}{assist_stat}\nСчёт: <b>{our}:{opp}</b>\n"
-    + SEP + "\n\n{closer}",
-    "💥 ЗАБИВАЕМ!\n\nАвтор мяча — {scorer}.{scorer_stat}\n"
-    "🎯 Голевой пас: {assister}{assist_stat}\n"
-    "На {minute}' минуте счёт стал <b>{our}:{opp}</b>\n"
-    + SEP + "\n\n{closer}",
-    "🎉 ТАБЛО ОБНОВЛЯЕТСЯ!\n\nГол на счету {scorer} — {minute}' минута."
-    "{scorer_stat}\n🎯 Голевой пас: {assister}{assist_stat}\n"
-    "Счёт: <b>{our}:{opp}</b>\n" + SEP + "\n\n{closer}",
-    "✨ ОТЛИЧНОЕ ИСПОЛНЕНИЕ!\n\nНа {minute}' минуте мяч в воротах соперника."
-    "\n⚽ Автор: {scorer}{scorer_stat}\n🎯 Ассист: {assister}{assist_stat}\n"
-    "Счёт: <b>{our}:{opp}</b>\n" + SEP + "\n\n{closer}",
-    "🚀 ЕЩЁ ОДИН В НАШУ КОПИЛКУ!\n\n{scorer} забивает — {minute}' минута."
-    "{scorer_stat}\n🎯 Пас отдал: {assister}{assist_stat}\n"
-    "Счёт: <b>{our}:{opp}</b>\n" + SEP + "\n\n{closer}",
-    "⚡ ТОЧНО В ЦЕЛЬ!\n\nНа {minute}' минуте {scorer} записывает гол."
-    "{scorer_stat}\n🎯 Голевой пас: {assister}{assist_stat}\n"
-    "Счёт: <b>{our}:{opp}</b>\n" + SEP + "\n\n{closer}",
-    "💪 НАШ ГОЛ!\n\n{scorer} отличился на {minute}' минуте.{scorer_stat}\n"
-    "🎯 Голевой пас: {assister}{assist_stat}\nТабло: <b>{our}:{opp}</b>\n"
-    + SEP + "\n\n{closer}",
-    "🔥 ОЧЕРЕДНОЙ МЯЧ!\n\nГол забит на {minute}' минуте.\n"
-    "⚽ Автор: {scorer}{scorer_stat}\n"
-    "🎯 Голевой пас: {assister}{assist_stat}\nСчёт: <b>{our}:{opp}</b>\n"
-    + SEP + "\n\n{closer}",
-    "🎯 В СЕТКУ!\n\n{scorer} забивает — {minute}' минута матча."
-    "{scorer_stat}\n🎯 Голевой пас: {assister}{assist_stat}\n"
-    "Счёт: <b>{our}:{opp}</b>\n" + SEP + "\n\n{closer}",
-    "💥 СНОВА В ДЕЛЕ!\n\nНа {minute}' минуте отличился {scorer}."
-    "{scorer_stat}\n🎯 Голевой пас: {assister}{assist_stat}\n"
-    "Табло: <b>{our}:{opp}</b>\n" + SEP + "\n\n{closer}",
-    "⚽ МЯЧ В ВОРОТАХ СОПЕРНИКА!\n\nГол на {minute}' минуте — автор "
-    "{scorer}.{scorer_stat}\n🎯 Голевой пас: {assister}{assist_stat}\n"
-    "Счёт: <b>{our}:{opp}</b>\n" + SEP + "\n\n{closer}"]
+# ================= ШАБЛОНЫ: НАШ ГОЛ (С ПАСОМ) =================
+SCORED_ASSIST_TEMPLATES = [
+    "🔥 <b>ГО-О-О-Л!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> забивает"
+    " — с паса <b>{assister}</b>.\n\n{score}{stats}\n\n{closer}",
+    "⚽ <b>ЕСТЬ ГОЛ!</b>\n\n⏱ {minute}' минута\n\nГол на счету "
+    "<b>{scorer}</b>, пас отдал <b>{assister}</b>.\n\n{score}{stats}\n\n"
+    "{closer}",
+    "💥 <b>ЗАБИВАЕМ!</b>\n\n⏱ {minute}' минута\n\nАвтор мяча — "
+    "<b>{scorer}</b>. Голевой пас: <b>{assister}</b>.\n\n{score}{stats}\n\n"
+    "{closer}",
+    "🎉 <b>ТАБЛО ОБНОВЛЯЕТСЯ!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b>"
+    " записывает гол на свой счёт — ассист <b>{assister}</b>.\n\n{score}"
+    "{stats}\n\n{closer}",
+    "✨ <b>ОТЛИЧНОЕ ИСПОЛНЕНИЕ!</b>\n\n⏱ {minute}' минута\n\nМяч в воротах "
+    "соперника! Автор — <b>{scorer}</b>, пас — <b>{assister}</b>.\n\n"
+    "{score}{stats}\n\n{closer}",
+    "🚀 <b>ЕЩЁ ОДИН В НАШУ КОПИЛКУ!</b>\n\n⏱ {minute}' минута\n\n"
+    "<b>{scorer}</b> забивает. Пас отдал <b>{assister}</b>.\n\n{score}"
+    "{stats}\n\n{closer}",
+    "💪 <b>НАШ ГОЛ!</b>\n\n⏱ {minute}' минута\n\nОтличился <b>{scorer}</b>"
+    " — передача от <b>{assister}</b>.\n\n{score}{stats}\n\n{closer}",
+    "🎯 <b>В СЕТКУ!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> поражает "
+    "ворота соперника. Ассист: <b>{assister}</b>.\n\n{score}{stats}\n\n"
+    "{closer}",
+    "💥 <b>СНОВА В ДЕЛЕ!</b>\n\n⏱ {minute}' минута\n\nГол забит! Автор — "
+    "<b>{scorer}</b>, автор паса — <b>{assister}</b>.\n\n{score}{stats}\n\n"
+    "{closer}",
+    "⚡ <b>МЯЧ В ВОРОТАХ СОПЕРНИКА!</b>\n\n⏱ {minute}' минута\n\nЗабивает "
+    "<b>{scorer}</b> — с передачи <b>{assister}</b>.\n\n{score}{stats}\n\n"
+    "{closer}"]
 
+# ================= ШАБЛОНЫ: НАШ ГОЛ (БЕЗ ПАСА) =================
 SCORED_SOLO_TEMPLATES = [
-    "⚽ ГОЛ!\n\nНа {minute}' минуте отличился {scorer}!{scorer_stat}\n"
-    "Счёт: <b>{our}:{opp}</b>\n" + SEP + "\n\n{closer}",
-    "🎯 ТОЧНО В ЦЕЛЬ!\n\n{scorer} записывает мяч на свой счёт."
-    "{scorer_stat}\nМинута: {minute}'. Счёт: <b>{our}:{opp}</b>\n"
-    + SEP + "\n\n{closer}",
-    "⚡ ГОЛ! Есть!\n\n{scorer} забивает на {minute}' минуте.{scorer_stat}\n"
-    "Счёт: <b>{our}:{opp}</b>\n" + SEP + "\n\n{closer}",
-    "💥 ЗАНОСИМ В АКТИВ!\n\nГол на счету {scorer}.{scorer_stat}\n"
-    "Минута: {minute}'. Счёт: <b>{our}:{opp}</b>\n" + SEP + "\n\n{closer}",
-    "🔥 ОЧЕРЕДНОЙ ГОЛ!\n\n{scorer} снова в списке авторов.{scorer_stat}\n"
-    "На {minute}' минуте счёт стал <b>{our}:{opp}</b>\n"
-    + SEP + "\n\n{closer}",
-    "🎉 ТАБЛО ОБНОВЛЯЕТСЯ!\n\nГол забит: {scorer}.{scorer_stat}\n"
-    "Минута: {minute}'. Теперь на табло <b>{our}:{opp}</b>\n"
-    + SEP + "\n\n{closer}",
-    "✨ ЕСТЬ МЯЧ!\n\nАвтор — {scorer}.{scorer_stat}\n"
-    "На {minute}' минуте счёт стал <b>{our}:{opp}</b>\n"
-    + SEP + "\n\n{closer}",
-    "🚀 ГОЛ В НАШУ КОПИЛКУ!\n\n{scorer} делает счёт <b>{our}:{opp}</b> "
-    "на {minute}' минуте.{scorer_stat}\n" + SEP + "\n\n{closer}"]
+    "⚽ <b>ГОЛ!</b>\n\n⏱ {minute}' минута\n\nОтличился <b>{scorer}</b>."
+    "\n\n{score}{stats}\n\n{closer}",
+    "🎯 <b>ТОЧНО В ЦЕЛЬ!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> "
+    "записывает мяч на свой счёт.\n\n{score}{stats}\n\n{closer}",
+    "⚡ <b>ГОЛ! ЕСТЬ!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> забивает."
+    "\n\n{score}{stats}\n\n{closer}",
+    "💥 <b>ЗАНОСИМ В АКТИВ!</b>\n\n⏱ {minute}' минута\n\nГол на счету "
+    "<b>{scorer}</b>.\n\n{score}{stats}\n\n{closer}",
+    "🔥 <b>ОЧЕРЕДНОЙ ГОЛ!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> "
+    "снова в списке авторов.\n\n{score}{stats}\n\n{closer}",
+    "🎉 <b>ТАБЛО ОБНОВЛЯЕТСЯ!</b>\n\n⏱ {minute}' минута\n\nАвтор мяча — "
+    "<b>{scorer}</b>.\n\n{score}{stats}\n\n{closer}",
+    "✨ <b>ЕСТЬ МЯЧ!</b>\n\n⏱ {minute}' минута\n\nЗабивает <b>{scorer}</b>."
+    "\n\n{score}{stats}\n\n{closer}",
+    "🚀 <b>ГОЛ В НАШУ КОПИЛКУ!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b>"
+    " делает счёт в нашу пользу.\n\n{score}{stats}\n\n{closer}"]
 
+# ================= ШАБЛОНЫ: ПРОПУСТИЛИ =================
 CONCEDED_TEMPLATES = {
     "early_trail": [
-        "🥅 ПРОПУСКАЕМ ПЕРВЫМИ.\n\nНа {minute}' минуте соперник открывает "
-        "счёт.\nСчёт: <b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}",
-        "🥅 ПЕРВЫЙ ГОЛ В НАШЕЙ СЕТКЕ.\n\nСоперник забивает на {minute}' — "
-        "счёт становится <b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}"],
+        "🥅 <b>ПЕРВЫЙ ГОЛ В НАШИХ ВОРОТАХ</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник открывает счёт.\n\n{score}\n\n{closer}",
+        "😔 <b>ПРОПУСКАЕМ ПЕРВЫМИ</b>\n\n⏱ {minute}' минута\n\nСоперник "
+        "забивает первым.\n\n{score}\n\n{closer}"],
     "mid_trail": [
-        "🥅 ПРОПУСКАЕМ.\n\nНа {minute}' соперник делает счёт "
-        "<b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}",
-        "🥅 ГОЛ В НАШИ ВОРОТА.\n\nНа {minute}' счёт становится "
-        "<b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}"],
+        "🥅 <b>ГОЛ В НАШИ ВОРОТА</b>\n\n⏱ {minute}' минута\n\nСоперник "
+        "делает счёт.\n\n{score}\n\n{closer}",
+        "😖 <b>ПРОПУСКАЕМ</b>\n\n⏱ {minute}' минута\n\nМяч в нашей сетке."
+        "\n\n{score}\n\n{closer}"],
     "pushing": [
-        "🥅 ВТОРОЙ ПОДРЯД — НЕ ПО ПЛАНУ.\n\nНа {minute}' соперник делает "
-        "счёт <b>{our}:{opp}</b>. Нужно перехватывать инициативу.\n"
-        + SEP + "\n\n{closer}",
-        "🥅 НЕ ДАЁМ СЕБЕ РАССЛАБИТЬСЯ.\n\nГол на {minute}' — счёт "
-        "<b>{our}:{opp}</b>. Дальше играем только вперёд.\n"
-        + SEP + "\n\n{closer}"],
+        "🥅 <b>ВТОРОЙ ПОДРЯД — НЕ ПО ПЛАНУ</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник снова забивает.\n\n{score}\n\n{closer}",
+        "😤 <b>НЕ ДАЁМ СЕБЕ РАССЛАБИТЬСЯ</b>\n\n⏱ {minute}' минута\n\n"
+        "Второй пропущенный мяч за короткий отрезок.\n\n{score}\n\n{closer}"],
     "angry": [
-        "🥅 СЧЁТ РАСТЁТ — ВРЕМЯ ДЕЙСТВОВАТЬ.\n\nНа {minute}' соперник "
-        "делает счёт <b>{our}:{opp}</b>. Нужно отвечать голами.\n"
-        + SEP + "\n\n{closer}",
-        "🥅 НЕ ВРЕМЯ СДАВАТЬСЯ.\n\nГол на {minute}' — счёт "
-        "<b>{our}:{opp}</b>. Играем до конца.\n" + SEP + "\n\n{closer}"],
+        "🥅 <b>СЧЁТ РАСТЁТ — ВРЕМЯ ДЕЙСТВОВАТЬ</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник делает счёт.\n\n{score}\n\n{closer}",
+        "😤 <b>НЕ ВРЕМЯ СДАВАТЬСЯ</b>\n\n⏱ {minute}' минута\n\nСоперник "
+        "снова забивает.\n\n{score}\n\n{closer}"],
     "crushed": [
-        "🥅 ТЯЖЁЛЫЙ МОМЕНТ.\n\nНа {minute}' соперник делает счёт "
-        "<b>{our}:{opp}</b>. Не опускаем руки — впереди ещё минуты.\n"
-        + SEP + "\n\n{closer}",
-        "🥅 МЯЧ В СЕТКЕ — СОБИРАЕМСЯ.\n\nГол на {minute}' — счёт "
-        "<b>{our}:{opp}</b>. Продолжаем бороться.\n" + SEP + "\n\n{closer}"],
+        "🥅 <b>ТЯЖЁЛЫЙ МОМЕНТ</b>\n\n⏱ {minute}' минута\n\nСоперник снова "
+        "забивает.\n\n{score}\n\n{closer}",
+        "😔 <b>МЯЧ В СЕТКЕ — СОБИРАЕМСЯ</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник делает счёт.\n\n{score}\n\n{closer}"],
     "behind_late": [
-        "🥅 ДО КОНЦА ОСТАЛИСЬ МИНУТЫ.\n\nНа {minute}' соперник делает счёт "
-        "<b>{our}:{opp}</b>. Доигрываем до финальной сирены.\n"
-        + SEP + "\n\n{closer}",
-        "🥅 ПОСЛЕДНИЕ МИНУТЫ — НЕ СДАЁМСЯ.\n\nГол на {minute}' — счёт "
-        "<b>{our}:{opp}</b>. До конца матча ещё есть время.\n"
-        + SEP + "\n\n{closer}"],
+        "⏳ <b>ДО КОНЦА ОСТАЛИСЬ МИНУТЫ</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник делает счёт.\n\n{score}\n\n{closer}",
+        "🥅 <b>ПОСЛЕДНИЕ МИНУТЫ — НЕ СДАЁМСЯ</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник снова забивает.\n\n{score}\n\n{closer}"],
     "lost_lead": [
-        "🥅 УПУСТИЛИ ПРЕИМУЩЕСТВО.\n\nНа {minute}' соперник меняет картину "
-        "матча. Счёт: <b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}",
-        "🥅 ОБИДНЫЙ ПОВОРОТ.\n\nГол соперника на {minute}' — счёт "
-        "<b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}"],
+        "🥅 <b>УПУСТИЛИ ПРЕИМУЩЕСТВО</b>\n\n⏱ {minute}' минута\n\nСоперник "
+        "меняет картину матча.\n\n{score}\n\n{closer}",
+        "😖 <b>ОБИДНЫЙ ПОВОРОТ</b>\n\n⏱ {minute}' минута\n\nСоперник "
+        "отбирает лидерство.\n\n{score}\n\n{closer}"],
     "restoring_lead": [
-        "🥅 СОПЕРНИК СОКРАЩАЕТ ОТРЫВ.\n\nНа {minute}' счёт становится "
-        "<b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}",
-        "🥅 НЕ РАССЛАБЛЯЕМСЯ.\n\nГол на {minute}' — счёт "
-        "<b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}"],
+        "🥅 <b>СОПЕРНИК СОКРАЩАЕТ ОТРЫВ</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник делает счёт.\n\n{score}\n\n{closer}",
+        "⚠️ <b>НЕ РАССЛАБЛЯЕМСЯ</b>\n\n⏱ {minute}' минута\n\nСоперник "
+        "снова забивает.\n\n{score}\n\n{closer}"],
     "exchange_c": [
-        "🥅 МГНОВЕННЫЙ ОТВЕТ СОПЕРНИКА.\n\nНа {minute}' счёт становится "
-        "<b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}",
-        "🥅 КАЧЕЛИ ПРОДОЛЖАЮТСЯ.\n\nГол на {minute}' — счёт "
-        "<b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}"],
+        "🥅 <b>МГНОВЕННЫЙ ОТВЕТ СОПЕРНИКА</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник отвечает.\n\n{score}\n\n{closer}",
+        "🥅 <b>КАЧЕЛИ ПРОДОЛЖАЮТСЯ</b>\n\n⏱ {minute}' минута\n\nСоперник "
+        "снова забивает.\n\n{score}\n\n{closer}"],
     "fresh_c": [
-        "🥅 ЗАТИШЬЕ ЗАКОНЧИЛОСЬ ГОЛОМ СОПЕРНИКА.\n\nНа {minute}' счёт "
-        "становится <b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}",
-        "🥅 ОЧНУЛИСЬ — А СЧЁТ УЖЕ НЕ НАШ.\n\nГол на {minute}' — счёт "
-        "<b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}"]}
+        "🥅 <b>ЗАТИШЬЕ ЗАКОНЧИЛОСЬ ГОЛОМ СОПЕРНИКА</b>\n\n⏱ {minute}' "
+        "минута\n\nСоперник забивает после паузы.\n\n{score}\n\n{closer}",
+        "🥅 <b>ОЧНУЛИСЬ — А СЧЁТ УЖЕ НЕ НАШ</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник забивает.\n\n{score}\n\n{closer}"]}
 
 # ================= МИЛСТОУНЫ =================
 MILESTONE_GOAL_NAMES = {2: "ДУБЛЬ", 3: "ХЕТ-ТРИК", 4: "ПОКЕР",
@@ -455,46 +449,50 @@ CLOSERS["milestone_a4"] = ["Покер ассистента — фантасти
 CLOSERS["milestone_a5"] = ["Пента-ассист — легенда вечера!"]
 
 MILESTONE_G_TEMPLATES = [
-    "🎩 {ms_name}!\n\n{scorer} оформляет {ms_lower} — {n}-й мяч в этом "
-    "матче!{scorer_stat}{assist_line}\nСчёт: <b>{our}:{opp}</b>\n"
-    + SEP + "\n\n{closer}",
-    "💥 {ms_name}!\n\n{n}-й мяч в этом матче на счету {scorer}!"
-    "{scorer_stat}{assist_line}\nМинута: {minute}'. "
-    "Счёт: <b>{our}:{opp}</b>\n" + SEP + "\n\n{closer}",
-    "🔥 {ms_name}!\n\n{scorer} продолжает поражать — теперь {n} {n_word} "
-    "за матч!{scorer_stat}{assist_line}\nТабло: <b>{our}:{opp}</b>\n"
-    + SEP + "\n\n{closer}"]
+    "🎩 <b>{ms_name}!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> "
+    "оформляет {ms_lower} — {n}-й мяч в этом матче!{assist_line}\n\n"
+    "{score}{stats}\n\n{closer}",
+    "💥 <b>{ms_name}!</b>\n\n⏱ {minute}' минута\n\n{n}-й мяч в этом матче "
+    "— на счету <b>{scorer}</b>!{assist_line}\n\n{score}{stats}\n\n{closer}",
+    "🔥 <b>{ms_name}!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> "
+    "продолжает поражать: теперь {n} {n_word} за матч!{assist_line}\n\n"
+    "{score}{stats}\n\n{closer}"]
 
 MILESTONE_A_TEMPLATES = [
-    "🎯 ГОЛЕВОЙ ПАС В ДЕЛЕ!\n\n{scorer} забивает на "
-    "{minute}' минуте — а {assister} раздаёт: {assist_ms} в этом матче!"
-    "{assist_stat}\nСчёт: <b>{our}:{opp}</b>\n" + SEP + "\n\n{closer}",
-    "🧠 РАЗДАЮТ МЯЧИ!\n\n{scorer} оформляет гол на {minute}' минуте, "
-    "{assist_ms} — на счету {assister}!{assist_stat}\n"
-    "Табло: <b>{our}:{opp}</b>\n" + SEP + "\n\n{closer}"]
+    "🧠 <b>РАЗДАЮТ МЯЧИ!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> "
+    "забивает — {assist_ms} на счету <b>{assister}</b>!\n\n{score}{stats}"
+    "\n\n{closer}",
+    "🎯 <b>ГОЛЕВОЙ ПАС В ДЕЛЕ!</b>\n\n⏱ {minute}' минута\n\nГол на счету "
+    "<b>{scorer}</b>, а <b>{assister}</b> оформляет {assist_ms} в этом "
+    "матче!\n\n{score}{stats}\n\n{closer}"]
 
 # ================= КАРТОЧКИ =================
 CARD_TEMPLATES = {
     "yellow_our": [
-        "🟡 ЖЁЛТАЯ КАРТОЧКА У НАС.\n\n{player} получает предупреждение "
-        "на {minute}' минуте.\n\n{closer}",
-        "🟡 ПРЕДУПРЕЖДЕНИЕ.\n\nНа {minute}' минуте жёлтую карточку "
-        "получает {player}.\n\n{closer}"],
+        "🟡 <b>ПРЕДУПРЕЖДЕНИЕ У НАС</b>\n\n⏱ {minute}' минута\n\n"
+        "<b>{player}</b> получает жёлтую карточку.\n\n{closer}",
+        "🟡 <b>ЖЁЛТАЯ У НАС</b>\n\n⏱ {minute}' минута\n\nПредупреждение "
+        "забирает <b>{player}</b>.\n\n{closer}"],
     "yellow_opp": [
-        "🟡 ЖЁЛТАЯ КАРТОЧКА У СОПЕРНИКА.\n\nПредупреждение на "
-        "{minute}' минуте.\n\n{closer}",
-        "🟡 СОПЕРНИК ПОЛУЧАЕТ ЖЁЛТУЮ.\n\nМинута: {minute}'.\n\n{closer}"],
+        "🟡 <b>ЖЁЛТАЯ У СОПЕРНИКА</b>\n\n⏱ {minute}' минута\n\n"
+        "Предупреждение получает <b>{player}</b>.\n\n{closer}",
+        "🟡 <b>СОПЕРНИК ПРЕДУПРЕЖДЁН</b>\n\n⏱ {minute}' минута\n\n"
+        "Жёлтую карточку забирает <b>{player}</b>.\n\n{closer}"],
     "red_our": [
-        "🚨 КРАСНАЯ КАРТОЧКА У НАС.\n\n{player} покидает поле на "
-        "{minute}' минуте.\n\n{closer}",
-        "🚨 УДАЛЕНИЕ.\n\n{player} получает красную на {minute}' минуте."
-        "\n\n{closer}"],
+        "🚨 <b>КРАСНАЯ КАРТОЧКА У НАС</b>\n\n⏱ {minute}' минута\n\n"
+        "<b>{player}</b> покидает поле.\n\n{closer}",
+        "🚨 <b>УДАЛЕНИЕ</b>\n\n⏱ {minute}' минута\n\nКрасную получает "
+        "<b>{player}</b>.\n\n{closer}"],
     "red_opp": [
-        "🚨 КРАСНАЯ КАРТОЧКА У СОПЕРНИКА!\n\nУдаление на {minute}' "
-        "минуте.\n\n{closer}"],
+        "🚨 <b>УДАЛЕНИЕ У СОПЕРНИКА</b>\n\n⏱ {minute}' минута\n\n"
+        "<b>{player}</b> получает красную.\n\n{closer}",
+        "🚨 <b>КРАСНАЯ У СОПЕРНИКА!</b>\n\n⏱ {minute}' минута\n\n"
+        "<b>{player}</b> покидает поле.\n\n{closer}"],
     "two_yellows": [
-        "🟥 ДВЕ ЖЁЛТЫЕ — КРАСНАЯ.\n\n{player} покидает поле: вторая "
-        "жёлтая на {minute}' минуте.\n\n{closer}"]}
+        "🟥 <b>ДВЕ ЖЁЛТЫЕ — КРАСНАЯ</b>\n\n⏱ {minute}' минута\n\n"
+        "<b>{player}</b> покидает поле: вторая жёлтая.\n\n{closer}",
+        "🟥 <b>ВТОРАЯ ЖЁЛТАЯ — УДАЛЕНИЕ</b>\n\n⏱ {minute}' минута\n\n"
+        "<b>{player}</b> отправляется в раздевалку.\n\n{closer}"]}
 CLOSERS["card_yellow_our"] = [
     "Держим голову холодной — впереди ещё игра!",
     "Дисциплина важнее эмоций!",
@@ -514,20 +512,15 @@ CLOSERS["card_two_yellows"] = [
 
 # ================= АВТОГОЛЫ =================
 AUTOGOAL_OUR_TEMPLATES = [
-    "⚽ АВТОГОЛ — В НАШУ ПОЛЬЗУ!\n\nНа {minute}' минуте соперник срезает "
-    "мяч в свои ворота.\nСчёт: <b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}",
-    "🔄 ПОДАРОК ОТ СОПЕРНИКА!\n\nАвтогол на {minute}' минуте — счёт "
-    "становится <b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}",
-    "🎉 ГОЛ ЗАСЧИТАН В НАШУ ПОЛЬЗУ!\n\nНа {minute}' минуте мяч после "
-    "рикошета оказывается в сетке ворот соперника. "
-    "Счёт: <b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}"]
+    "⚽ <b>АВТОГОЛ — В НАШУ ПОЛЬЗУ!</b>\n\n⏱ {minute}' минута\n\nСоперник "
+    "срезает мяч в свои ворота.\n\n{score}\n\n{closer}",
+    "🔄 <b>ПОДАРОК ОТ СОПЕРНИКА!</b>\n\n⏱ {minute}' минута\n\nАвтогол — "
+    "счёт в нашу пользу.\n\n{score}\n\n{closer}"]
 AUTOGOAL_AGAINST_TEMPLATES = [
-    "🥅 НЕУДАЧНЫЙ РИКОШЕТ.\n\nАвтогол в наши ворота на {minute}' минуте."
-    "\nСчёт: <b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}",
-    "🥅 МЯЧ В СЕТКЕ — АВТОГОЛ.\n\nНа {minute}' минуте гол засчитан "
-    "сопернику.\nСчёт: <b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}",
-    "🥅 ТАКОЕ БЫВАЕТ.\n\nАвтогол на {minute}' минуте — счёт становится "
-    "<b>{our}:{opp}</b>.\n" + SEP + "\n\n{closer}"]
+    "🥅 <b>АВТОГОЛ В НАШИ ВОРОТА</b>\n\n⏱ {minute}' минута\n\nМяч после "
+    "рикошета оказывается в нашей сетке.\n\n{score}\n\n{closer}",
+    "😖 <b>ТАКОЕ БЫВАЕТ</b>\n\n⏱ {minute}' минута\n\nАвтогол — счёт "
+    "меняется не в нашу пользу.\n\n{score}\n\n{closer}"]
 CLOSERS["autogoal_our"] = [
     "Гол есть гол — записываем!",
     "Удача сегодня на нашей стороне!",
@@ -573,10 +566,11 @@ def plural(n, one, few, many):
 
 # ================= СБОРКА ПОСТОВ =================
 def _stat_goals(n):
-    return ("\n📊 " + str(n) + "-й гол в чемпионате") if n is not None else ""
+    return ("📊 " + str(n) + "-й гол в чемпионате") \
+        if n is not None else ""
 
 def _stat_assists(n):
-    return (" (" + str(n) + "-я передача в сезоне)") \
+    return ("🎯 " + str(n) + "-я передача в сезоне") \
         if n is not None else ""
 
 def build_goal_post(state, scored, scorer, assister, minute, our, opp,
@@ -591,26 +585,22 @@ def build_goal_post(state, scored, scorer, assister, minute, our, opp,
     a_n = assister_match_assists if assister else 0
     scorer_ms = g_n if (scored and g_n >= 2) else None
     assist_ms = a_n if (assister and a_n >= 2) else None
+    score = score_big(our, opp)
 
     if scored:
+        scorer_b = "<b>" + esc(scorer) + "</b>"
         sg = season_count(state, scorer, "goals", scorer_match_goals,
                           match_url)
-        scorer_stat = _stat_goals(sg)
-        scorer = esc(scorer)
+        parts = []
+        if sg is not None:
+            parts.append(_stat_goals(sg))
+        aa = None
         assist_line = ""
         if assister:
             aa = season_count(state, assister, "assists",
                               assister_match_assists, match_url)
-            assist_stat = _stat_assists(aa)
-            if assist_ms:
-                assist_line = ("\n🎯 Голевой пас: " + esc(assister)
-                               + " — "
-                               + MILESTONE_ASSIST_LOWER.get(assist_ms,
-                                 str(assist_ms) + " передач в этом матче")
-                               + " в этом матче!")
-            else:
-                assist_line = "\n🎯 Голевой пас: " + esc(assister) \
-                    + assist_stat
+            assist_line = " — с паса <b>" + esc(assister) + "</b>"
+        stats_block = ("\n\n" + " · ".join(parts)) if parts else ""
         # милстоун забившего — приоритет перед пас-милстоуном
         if scorer_ms:
             if scorer_ms > 5:
@@ -624,37 +614,42 @@ def build_goal_post(state, scored, scorer, assister, minute, our, opp,
             tpl = pick_tpl(state, MILESTONE_G_TEMPLATES)
             return tpl.format(ms_name=ms_name, ms_lower=ms_lower, n=g_n,
                               n_word=plural(g_n, "мяч", "мяча", "мячей"),
-                              scorer=scorer, scorer_stat=scorer_stat,
-                              assist_line=assist_line, minute=minute,
-                              our=our, opp=opp, closer=closer)
+                              scorer=scorer_b, assist_line=assist_line,
+                              minute=minute, score=score,
+                              stats=stats_block, closer=closer)
         if assist_ms:
+            if aa is not None:
+                parts.append(_stat_assists(aa))
+                stats_block = ("\n\n" + " · ".join(parts)) if parts else ""
             closer = pick_closer(state,
                                  "milestone_a" + str(min(assist_ms, 5)))
             tpl = pick_tpl(state, MILESTONE_A_TEMPLATES)
-            return tpl.format(scorer=scorer, assister=esc(assister),
-                              minute=minute, our=our, opp=opp,
+            return tpl.format(scorer=scorer_b,
+                              assister="<b>" + esc(assister) + "</b>",
+                              minute=minute, score=score,
+                              stats=stats_block,
                               assist_ms=MILESTONE_ASSIST_LOWER.get(
                                   assist_ms,
                                   str(assist_ms) + " передач"),
-                              assist_stat="", closer=closer)
+                              closer=closer)
         if assister:
-            tpl = pick_tpl(state, SCORED_TEMPLATES)
-            return tpl.format(minute=minute, our=our, opp=opp,
-                              scorer=scorer, assister=esc(assister),
-                              scorer_stat=scorer_stat,
-                              assist_stat=assist_stat, closer=closer)
+            tpl = pick_tpl(state, SCORED_ASSIST_TEMPLATES)
+            return tpl.format(minute=minute, scorer=scorer_b,
+                              assister="<b>" + esc(assister) + "</b>",
+                              score=score, stats=stats_block, closer=closer)
         tpl = pick_tpl(state, SCORED_SOLO_TEMPLATES)
-        return tpl.format(minute=minute, our=our, opp=opp, scorer=scorer,
-                          scorer_stat=scorer_stat, closer=closer)
+        return tpl.format(minute=minute, scorer=scorer_b, score=score,
+                          stats=stats_block, closer=closer)
     # пропустили
     pool = CONCEDED_TEMPLATES.get(key) or CONCEDED_TEMPLATES["mid_trail"]
     tpl = pick_tpl(state, pool)
-    return tpl.format(minute=minute, our=our, opp=opp, closer=closer)
+    return tpl.format(minute=minute, score=score, closer=closer)
 
 def build_card_post(state, ctype, ours, player, minute, yellow_before=0):
+    player_b = "<b>" + esc(player) + "</b>"
     if ctype == "red" and ours and yellow_before >= 1:
         tpl = pick_tpl(state, CARD_TEMPLATES["two_yellows"])
-        return tpl.format(player=esc(player), minute=minute,
+        return tpl.format(player=player_b, minute=minute,
                           closer=pick_closer(state, "card_two_yellows"))
     if ctype == "red":
         if ours:
@@ -663,23 +658,24 @@ def build_card_post(state, ctype, ours, player, minute, yellow_before=0):
         else:
             tpl = pick_tpl(state, CARD_TEMPLATES["red_opp"])
             closer = pick_closer(state, "card_red_opp")
-        return tpl.format(player=esc(player), minute=minute, closer=closer)
+        return tpl.format(player=player_b, minute=minute, closer=closer)
     if ours:
         tpl = pick_tpl(state, CARD_TEMPLATES["yellow_our"])
         closer = pick_closer(state, "card_yellow_our")
     else:
         tpl = pick_tpl(state, CARD_TEMPLATES["yellow_opp"])
         closer = pick_closer(state, "card_yellow_opp")
-    return tpl.format(player=esc(player), minute=minute, closer=closer)
+    return tpl.format(player=player_b, minute=minute, closer=closer)
 
 def build_autogoal_post(state, ours, minute, our, opp):
+    score = score_big(our, opp)
     if ours:
         tpl = pick_tpl(state, AUTOGOAL_OUR_TEMPLATES)
         closer = pick_closer(state, "autogoal_our")
     else:
         tpl = pick_tpl(state, AUTOGOAL_AGAINST_TEMPLATES)
         closer = pick_closer(state, "autogoal_against")
-    return tpl.format(minute=minute, our=our, opp=opp, closer=closer)
+    return tpl.format(minute=minute, score=score, closer=closer)
 
 # ================= ДЕМО =================
 def run_demo():
