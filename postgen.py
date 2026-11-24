@@ -28,8 +28,8 @@ def score_big(our, opp):
     combining keycap, чтобы копирование кода из чата не могло
     испортить символы (готовые кейкапы ломались при переносе)."""
     def digits(n):
-        return " ".join(chr(48 + int(c)) + chr(0xFE0F) + chr(0x20E3)
-                        for c in str(n))
+        return "".join(chr(48 + int(c)) + chr(0xFE0F) + chr(0x20E3)
+                       for c in str(n))
     return digits(our) + " : " + digits(opp)
 
 # ================= КЛИШЕ (финальные строки) =================
