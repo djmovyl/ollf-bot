@@ -43,6 +43,7 @@ jobs:
           TG_API_URL: ${{ secrets.TG_API_URL }}
           TG_PROXY_SECRET: ${{ secrets.TG_PROXY_SECRET }}
           JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+          STREAM_URL: ${{ secrets.STREAM_URL }}
 
       - name: Save bot state
         if: always()
