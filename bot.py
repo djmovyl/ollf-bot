@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.39 (24.11.2026)"
+VERSION = "bot-2.40 (24.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -129,13 +129,13 @@ PATH_PREF = ["worker", "allorigins", "codetabs", "direct", "jina"]
 
 # Крупный счёт: кейкап-цифры. Основная реализация — в postgen,
 # здесь локальный фолбэк на случай, если postgen не найден
-KEYCAP = "0️⃣1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣8️⃣9️⃣"
-
-
 def score_big(sc):
-    """Счёт эмодзи-цифрами: (4,3) -> '4️⃣ : 3️⃣'."""
+    """Счёт эмодзи-цифрами: (4,3) -> '4️⃣ : 3️⃣'.
+    Кейкапы собираются из код-поинтов: цифра + вариационный
+    селектор + combining keycap — копирование не ломает символы."""
     def digits(n):
-        return " ".join(KEYCAP[int(c)] for c in str(n))
+        return " ".join(chr(48 + int(c)) + chr(0xFE0F) + chr(0x20E3)
+                        for c in str(n))
     return digits(sc[0]) + " : " + digits(sc[1])
 
 
@@ -887,7 +887,7 @@ def render_post(ev):
             closer = "Держим голову холодной — впереди ещё игра! ⏳"
         else:
             head = "🟡 <b>ЖЁЛТАЯ У СОПЕРНИКА</b>"
-            act = "Предупреждение получает " + p_b + "."
+            act = "Соперник получает предупреждение."
             closer = "Сопернику горячо — используем! 💪"
         return head + "\n\n" + ml + "\n\n" + act + "\n\n" + closer
     if ev["et"] == "red":
@@ -897,7 +897,7 @@ def render_post(ev):
             closer = "Играем в меньшинстве — держим строй! 🛡️"
         else:
             head = "🚨 <b>УДАЛЕНИЕ У СОПЕРНИКА</b>"
-            act = p_b + " получает красную."
+            act = "Игрок соперника покидает поле."
             closer = "Остались в большинстве — давим! 🔥"
         return head + "\n\n" + ml + "\n\n" + act + "\n\n" + closer
     if ev["et"] == "autogoal":
