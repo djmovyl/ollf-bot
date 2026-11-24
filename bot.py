@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.36 (24.11.2026)"
+VERSION = "bot-2.37 (24.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -15,9 +15,15 @@ JINA_KEY = os.environ.get("JINA_API_KEY", "")
 CALENDAR_URL = "https://ollf.ru/tournament/1067343/calendar"
 TABLES_URL = "https://ollf.ru/tournament/1067343/tables"
 OUR_KEY = "ITPROVIDER"
-# PAST_MATCH = True  -> тестовый режим: разбор MATCH_URL, только лог
-# PAST_MATCH = False -> боевой режим: календарь + реальный канал
-PAST_MATCH = False
+# Режимы работы:
+#   "prod"      -> боевой: календарь + реальные посты в канал
+#   "test_log"  -> тест: разбор MATCH_URL, только лог
+#   "test_live" -> тест: РЕПЛЕЙ полного матч-дня на MATCH_URL,
+#                  все посты (анонс, напоминание, состав, старт,
+#                  события, итог) реально уходят в канал
+MODE = "test_live"
+# Для совместимости со старыми проверками
+PAST_MATCH = MODE != "prod"
 MATCH_URL = "https://ollf.ru/match/5905514"
 START_H, START_M = 18, 0
 DURATION_MIN = 75
@@ -28,7 +34,11 @@ VK_TRANSLATION = "https://vkvideo.ru/@club154907309/all"
 # Ссылка на трансляцию: берём из секрета STREAM_URL, если задан,
 # иначе — запасная ссылка на канал VK
 STREAM_URL = os.environ.get("STREAM_URL", VK_TRANSLATION)
-STATE_FILE = "prod_state.json"
+# У каждого режима своё состояние: реплей не должен оставлять «seen»
+# и пометки синка статистики в боевом prod_state.json
+STATE_FILE = {"prod": "prod_state.json",
+              "test_log": "test_state.json",
+              "test_live": "test_live_state.json"}[MODE]
 
 # Речевой слой: постген с клише, милстоунами и сезонной статистикой.
 # Если файла нет рядом с ботом — работаем в старом формате постов.
@@ -144,14 +154,19 @@ def esc(s):
 
 
 def send(text):
-    if PAST_MATCH:
+    if MODE == "test_log":
         print("[ТЕСТ] Сообщение НЕ отправлено в канал:")
         print(text.replace("<b>", "").replace("</b>", ""))
         return
+    if MODE == "test_live":
+        print("[ТЕСТ-ЛАЙВ] Отправляю в канал:")
+        print(text.replace("<b>", "").replace("</b>", ""))
     res = tg("sendMessage", chat_id=CHANNEL, text=text[:3900],
              parse_mode="HTML")
     if not res.get("ok"):
         print("Telegram error:", res)
+    elif MODE == "test_live":
+        print("[ТЕСТ-ЛАЙВ] Отправлено: да")
 
 
 def html_to_md(raw):
@@ -1092,18 +1107,44 @@ def hour_reminder(time_str, loc):
             "⏱ Начало в <b>" + time_str + "</b> (МСК)\n\n" + loc_line)
 
 
-def test_mode():
-    """Тестовый прогон на сыгранном матче: только лог."""
+def final_post_text(sc, our_team, opp_team):
+    """Текст «МАТЧ ЗАВЕРШЁН» — общий для боевого режима и реплея,
+    чтобы в канале не было расхождений."""
+    our, opp = (sc[0], sc[1]) if OUR_IS_HOME else (sc[1], sc[0])
+    if our > opp:
+        verdict = "🎉 <b>ПОБЕДА!</b> 🎉"
+    elif our < opp:
+        verdict = "😔 <b>ПОРАЖЕНИЕ</b> 😔"
+    else:
+        verdict = "🤝 <b>НИЧЬЯ</b> 🤝"
+    return ("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n📊 Итоговый счёт: <b>"
+            + esc(our_team) + " " + str(our) + ":" + str(opp)
+            + " " + esc(opp_team) + "</b>\n\n" + verdict
+            + "\n\nСпасибо за игру, команду! 🤝")
+
+
+def started_post_text(t1, t2):
+    """Текст «МАТЧ НАЧАЛСЯ» — общий для боевого режима и реплея."""
+    return ("🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n🆚 <b>" + esc(t1) + " vs "
+            + esc(t2) + "</b>\n\nДержим кулаки за команду! 👊")
+
+
+def load_page_bundle(match_url):
+    """Общая загрузка страницы матча для обоих тестовых режимов:
+    маркдаун, полный HTML, команды, шапка (дата/время/локация),
+    таблица, протокол, состав. Возвращает словарь или None."""
     global OUR_IS_HOME
     init_path_pref()
-    md = jina(MATCH_URL, must_contain="teams/application")
+    md = jina(match_url, must_contain="teams/application")
     if not md:
         print("Страница матча не скачалась")
-        return
-    html = jina_full_html(MATCH_URL)
+        return None
+    html = jina_full_html(match_url)
     t1, t2 = parse_teams(md)
     print("Команды:", t1, "vs", t2)
     OUR_IS_HOME = OUR_KEY in t1.upper()
+    mdate = mtime = None
+    loc = "уточняется"
     try:
         mdate, mtime, loc = extract_match_info(md, html, t1, t2)
         print("Шапка матча: дата", mdate, "| время", mtime,
@@ -1111,23 +1152,46 @@ def test_mode():
     except Exception:
         print("Ошибка разбора шапки (продолжаем):")
         print(traceback.format_exc())
+    if mtime is None:
+        try:
+            n_date, n_time = page_datetime(md, html, t1, t2)
+            if n_time:
+                mtime = n_time
+                mdate = mdate or n_date
+                print("Время из числового фолбэка:", n_time)
+        except Exception:
+            print("Ошибка числового фолбэка (продолжаем):")
+            print(traceback.format_exc())
+    time_str = "уточняется"
+    if mtime:
+        time_str = format(mtime[0], "02d") + ":" + format(mtime[1], "02d")
     tmd = tables_text()
-    if tmd:
-        parse_standings(tmd, t1, t2)
-    proto = jina(MATCH_URL + "?active=protocol")
+    standings = parse_standings(tmd, t1, t2) if tmd else {}
+    proto = jina(match_url + "?active=protocol")
     lineup = our_lineup(md, proto)
     if lineup:
-        print("ТЕСТ СОСТАВ — найдено", len(lineup), "игроков")
+        print("СОСТАВ — найдено", len(lineup), "игроков")
     else:
-        print("ТЕСТ СОСТАВ — не найден")
-    events = build_events(md, html, proto, lineup)
+        print("СОСТАВ — не найден")
+    return {"md": md, "html": html, "t1": t1, "t2": t2,
+            "mdate": mdate, "mtime": mtime, "time_str": time_str,
+            "loc": loc, "standings": standings, "proto": proto,
+            "lineup": lineup}
+
+
+def test_mode():
+    """Тестовый прогон на сыгранном матче: только лог."""
+    b = load_page_bundle(MATCH_URL)
+    if not b:
+        return
+    events = build_events(b["md"], b["html"], b["proto"], b["lineup"])
     for e in events:
         info = e["player"]
         if e.get("assist"):
             info += " (пас: " + e["assist"] + ")"
         print("СОБЫТИЕ:", e["et"], str(e["minute"]) + "'",
               info, e["score"], "| наши:", e["ours"])
-    fs = final_score_from_page(md)
+    fs = final_score_from_page(b["md"])
     print("Фолбэк счёта из шапки:", fs)
     if pg is not None:
         st = {"seen": [], "last_tpl": None, "last_closer": None,
@@ -1138,20 +1202,79 @@ def test_mode():
         print("postgen.py не найден — посты не собраны")
 
 
+def replay_full():
+    """Реплей полного матч-дня на сыгранном матче: все посты боевого
+    режима в боевом порядке уходят в канал. Данные — реальные, со
+    страницы реплея: шапка, таблица, протокол, состав, заявка."""
+    b = load_page_bundle(MATCH_URL)
+    if not b:
+        return
+    t1, t2 = b["t1"], b["t2"]
+    opp = t2 if OUR_IS_HOME else t1
+    # --- 1. АНОНС ---
+    standings_text = ""
+    if b["standings"]:
+        standings_text = standings_block(b["standings"], t1, t2)
+    post = announcement(opp, b["mdate"], b["time_str"], b["loc"],
+                        standings_text)
+    print("---- АНОНС ----")
+    send(post)
+    time.sleep(3)
+    # --- 2. НАПОМИНАНИЕ ЗА ЧАС ---
+    print("---- НАПОМИНАНИЕ ЗА ЧАС ----")
+    send(hour_reminder(b["time_str"], b["loc"]))
+    time.sleep(3)
+    # --- 3. СОСТАВ ---
+    if b["lineup"]:
+        print("---- СОСТАВ ----")
+        send_lineup(b["lineup"])
+    else:
+        print("СОСТАВ не распознан — пост состава пропущен")
+    time.sleep(3)
+    # --- 4. МАТЧ НАЧАЛСЯ ---
+    print("---- МАТЧ НАЧАЛСЯ ----")
+    send(started_post_text(t1, t2))
+    time.sleep(2)
+    # --- 5. СОБЫТИЯ (голы, карточки, автоголы, милстоуны) ---
+    events = build_events(b["md"], b["html"], b["proto"], b["lineup"])
+    for e in events:
+        info = e["player"]
+        if e.get("assist"):
+            info += " (пас: " + e["assist"] + ")"
+        print("СОБЫТИЕ:", e["et"], str(e["minute"]) + "'",
+              info, e["score"], "| наши:", e["ours"])
+    if pg is None:
+        print("postgen.py не найден — события пойдут старым форматом")
+    st = {"seen": [], "last_tpl": None, "last_closer": None,
+          "season_stats": {}, "stats_synced_match_urls": []}
+    sync_stats_safe(st, match_url=MATCH_URL)
+    post_events(events, st, MATCH_URL, do_send=True)
+    # --- 6. МАТЧ ЗАВЕРШЁН ---
+    sc = events[-1]["score"] if events else None
+    if not sc:
+        sc = final_score_from_page(b["md"])
+    if not sc:
+        print("Итоговый счёт не определён — итоговый пост пропущен")
+        return
+    time.sleep(3)
+    print("---- МАТЧ ЗАВЕРШЁН ----")
+    send(final_post_text(sc, t1, t2))
+    # Финальный синк: страница заявки уже включает сыгранный матч
+    sync_stats_safe(st, force=True, match_url=MATCH_URL)
+
+
 def main():
-    global OUR_IS_HOME, START_H, START_M, TIME_STR
     print("ВЕРСИЯ КОДА:", VERSION)
-    print("Режим:", "ТЕСТ (только лог)" if PAST_MATCH else "БОЕВОЙ")
+    print("Режим:", {"prod": "БОЕВОЙ",
+                     "test_log": "ТЕСТ (только лог)",
+                     "test_live": "ТЕСТ-ЛАЙВ (реплей матч-дня в канал)"
+                     }[MODE])
     print("Telegram API через:", TG_API.rstrip("/")
           if TG_API.rstrip("/") != "https://api.telegram.org"
           else "напрямую (TG_API_URL не задан!)")
     print("Ключ Jina:", "задан (страховой режим активен)"
           if JINA_KEY else "не задан — только анонимный Jina")
-    init_path_pref()
     now = datetime.now(MSK)
-    if PAST_MATCH:
-        test_mode()
-        return
     tk = now.strftime("%Y-%m-%d")
     # Календарь качаем один раз в день: найденный матч и «пустой день»
     # запоминаем в состоянии, чтобы не жечь запросы на каждом прогоне.
@@ -1204,6 +1327,7 @@ def main():
     # всё равно выйдет. Экономим попытки и ключ Jina.
     # Маркер 'teams/application': без него имена команд всё равно
     # не извлечь, так что такой ответ бесполезен.
+    global OUR_IS_HOME, START_H, START_M, TIME_STR
     t1 = t2 = None
     md = html = ""
     page_date = page_time = None
@@ -1350,7 +1474,6 @@ def main():
         post = announcement(t2 if OUR_IS_HOME else t1,
                             eff_date, TIME_STR, LOCATION, standings_text)
         print("---- АНОНС ----")
-        print(post.replace("<b>", "").replace("</b>", ""))
         send(post)
         st["announced"] = tk
         save_state(st)
@@ -1363,7 +1486,6 @@ def main():
         if 0 < dt_min <= 62.5 and LOCATION != "уточняется":
             post = hour_reminder(TIME_STR, LOCATION)
             print("---- НАПОМИНАНИЕ ЗА ЧАС ----")
-            print(post.replace("<b>", "").replace("</b>", ""))
             send(post)
             st["hour1"] = tk
             save_state(st)
@@ -1373,7 +1495,6 @@ def main():
             if dt_min <= 51:
                 post = hour_reminder(TIME_STR, "уточняется")
                 print("---- НАПОМИНАНИЕ ЗА ЧАС (локация не найдена) ----")
-                print(post.replace("<b>", "").replace("</b>", ""))
                 send(post)
                 st["hour1"] = tk
                 save_state(st)
@@ -1394,8 +1515,7 @@ def main():
         if events and not st.get("first_ts"):
             st["first_ts"] = time.time()
         save_state(st)
-        send("🏟️ <b>МАТЧ НАЧАЛСЯ!</b> 🏟️\n\n🆚 <b>" + esc(t1) + " vs "
-             + esc(t2) + "</b>\n\nДержим кулаки за команду! 👊")
+        send(started_post_text(t1, t2))
 
     # Публикация: постген с фолбэком в старый формат
     post_events(events, st, match_url)
@@ -1423,26 +1543,19 @@ def main():
                     st["score"] = page_sc
             save_state(st)
             sc = st["score"]
-            our, opp = (sc[0], sc[1]) if OUR_IS_HOME else (sc[1], sc[0])
             our_team = t1 if OUR_IS_HOME else t2
             opp_team = t2 if our_team == t1 else t1
-            if our > opp:
-                verdict = "🎉 <b>ПОБЕДА!</b> 🎉"
-            elif our < opp:
-                verdict = "😔 <b>ПОРАЖЕНИЕ</b> 😔"
-            else:
-                verdict = "🤝 <b>НИЧЬЯ</b> 🤝"
-            send("🏁 <b>МАТЧ ЗАВЕРШЁН!</b> 🏁\n\n📊 Итоговый счёт: <b>"
-                 + esc(our_team) + " " + str(our) + ":" + str(opp)
-                 + " " + esc(opp_team) + "</b>\n\n" + verdict
-                 + "\n\nСпасибо за игру, команду! 🤝")
+            send(final_post_text(sc, our_team, opp_team))
             # Финальный синк: страница заявки уже включает сыгранный матч
             sync_stats_safe(st, force=True, match_url=match_url)
 
 
 if __name__ == "__main__":
     try:
-        main()
+        if MODE == "test_live":
+            replay_full()
+        else:
+            main()
     except Exception:
         print(traceback.format_exc())
         try:
