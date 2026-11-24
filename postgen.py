@@ -17,12 +17,14 @@ TEAM_STATS_URL = ("https://ollf.ru/tournament/1067343/teams/"
                   "application?team_id=1381365")
 
 # ================= КРУПНЫЙ СЧЁТ =================
-KEYCAP = "0️⃣1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣8️⃣9️⃣"
-
 def score_big(our, opp):
-    """Счёт эмодзи-цифрами (кейкапы) — визуально крупнее текста."""
+    """Счёт эмодзи-цифрами (кейкапы) — визуально крупнее текста.
+    Эмодзи собираются из код-поинтов: цифра + вариационный селектор +
+    combining keycap, чтобы копирование кода из чата не могло
+    испортить символы (готовые кейкапы ломались при переносе)."""
     def digits(n):
-        return " ".join(KEYCAP[int(c)] for c in str(n))
+        return " ".join(chr(48 + int(c)) + chr(0xFE0F) + chr(0x20E3)
+                        for c in str(n))
     return digits(our) + " : " + digits(opp)
 
 # ================= КЛИШЕ (финальные строки) =================
@@ -475,9 +477,9 @@ CARD_TEMPLATES = {
         "забирает <b>{player}</b>.\n\n{closer}"],
     "yellow_opp": [
         "🟡 <b>ЖЁЛТАЯ У СОПЕРНИКА</b>\n\n⏱ {minute}' минута\n\n"
-        "Предупреждение получает <b>{player}</b>.\n\n{closer}",
+        "Соперник получает предупреждение.\n\n{closer}",
         "🟡 <b>СОПЕРНИК ПРЕДУПРЕЖДЁН</b>\n\n⏱ {minute}' минута\n\n"
-        "Жёлтую карточку забирает <b>{player}</b>.\n\n{closer}"],
+        "Жёлтую карточку забирает игрок соперника.\n\n{closer}"],
     "red_our": [
         "🚨 <b>КРАСНАЯ КАРТОЧКА У НАС</b>\n\n⏱ {minute}' минута\n\n"
         "<b>{player}</b> покидает поле.\n\n{closer}",
@@ -485,9 +487,9 @@ CARD_TEMPLATES = {
         "<b>{player}</b>.\n\n{closer}"],
     "red_opp": [
         "🚨 <b>УДАЛЕНИЕ У СОПЕРНИКА</b>\n\n⏱ {minute}' минута\n\n"
-        "<b>{player}</b> получает красную.\n\n{closer}",
+        "Игрок соперника получает красную.\n\n{closer}",
         "🚨 <b>КРАСНАЯ У СОПЕРНИКА!</b>\n\n⏱ {minute}' минута\n\n"
-        "<b>{player}</b> покидает поле.\n\n{closer}"],
+        "Игрок соперника покидает поле.\n\n{closer}"],
     "two_yellows": [
         "🟥 <b>ДВЕ ЖЁЛТЫЕ — КРАСНАЯ</b>\n\n⏱ {minute}' минута\n\n"
         "<b>{player}</b> покидает поле: вторая жёлтая.\n\n{closer}",
@@ -594,12 +596,13 @@ def build_goal_post(state, scored, scorer, assister, minute, our, opp,
         parts = []
         if sg is not None:
             parts.append(_stat_goals(sg))
-        aa = None
         assist_line = ""
         if assister:
             aa = season_count(state, assister, "assists",
                               assister_match_assists, match_url)
             assist_line = " — с паса <b>" + esc(assister) + "</b>"
+            if aa is not None:
+                parts.append(_stat_assists(aa))
         stats_block = ("\n\n" + " · ".join(parts)) if parts else ""
         # милстоун забившего — приоритет перед пас-милстоуном
         if scorer_ms:
@@ -618,9 +621,6 @@ def build_goal_post(state, scored, scorer, assister, minute, our, opp,
                               minute=minute, score=score,
                               stats=stats_block, closer=closer)
         if assist_ms:
-            if aa is not None:
-                parts.append(_stat_assists(aa))
-                stats_block = ("\n\n" + " · ".join(parts)) if parts else ""
             closer = pick_closer(state,
                                  "milestone_a" + str(min(assist_ms, 5)))
             tpl = pick_tpl(state, MILESTONE_A_TEMPLATES)
