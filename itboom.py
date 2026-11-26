@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.41-itboom (26.11.2026)"
+VERSION = "bot-2.42-itboom (26.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -71,6 +71,9 @@ S = BS + "s"
 
 TIME_PAT = re.compile(r"(\d{1,3})'\s*(\d{2})''")
 SCORE_END = re.compile(r"(\d{1,2})\s*:\s*(\d{1,2})\s*$")
+# Счёт в маркдауне ОЛЛФ бывает и через двоеточие, и через дефис
+# ('1 : 1', '1 - 1', '4 - 2') — общий регэксп для обоих разделителей
+SCORE_ANY = re.compile(r"(\d{1,2})\s*[:\-–—]\s*(\d{1,2})")
 NAME = r"[А-ЯЁ][а-яё\-]+"
 NAME_RE = re.compile(NAME + r"\s+" + NAME)
 
@@ -757,8 +760,12 @@ def md_events(md):
     out, score = [], [0, 0]
     for raw in md.splitlines():
         s = raw.strip()
-        if not s.startswith("*"):
-            continue
+        # События приходят и списком ('* ...'), и таблицей ('| ... |') —
+        # снимаем ячейки и проверяем минутный формат. TIME_PAT
+        # ('5'00'') специфичен для строк событий, в боковых таблицах
+        # такого формата нет — случайных срабатываний не будет
+        if "|" in s:
+            s = s.replace("|", " ").strip()
         m = TIME_PAT.search(s)
         if not m:
             continue
@@ -775,8 +782,9 @@ def md_events(md):
         scoring = None
         ms = SCORE_END.search(s)
         if not ms:
-            # В лайве счёт может быть не в конце строки — ищем в любом месте
-            for ms in re.finditer(r"(\d{1,2})\s*:\s*(\d{1,2})", clean):
+            # Счёт может быть '1:1', '1 - 1' и не в конце строки —
+            # ищем общий регэксп по всей строке
+            for ms in SCORE_ANY.finditer(clean):
                 pass
         if ms:
             nh, na = int(ms.group(1)), int(ms.group(2))
@@ -853,19 +861,20 @@ def classify_card(html, tstr, player):
 
 def final_score_from_page(md, t1=None, t2=None):
     """Фолбэк итогового счёта из шапки страницы матча (зона до
-    'События матча'). Счёт принимается, только если он стоит МЕЖДУ
-    полными именами обеих команд (в шапке ОЛЛФ счёт всегда между
-    названиями). Прежняя проверка по отдельным словам пропускала
-    цифры чужого сайдбара: 'Казань' встречается в ссылках турниров,
-    'Boom' — в личных встречах (в канал улетали фальшивые '14:0' и
-    '13:8'). Для несостоявшегося матча шапка '- : -' цифр не даёт —
-    вернём None, итоговый пост пропустится. Каждая цифра не больше 15,
-    чтобы не принять за счёт время '20:00'."""
+    'События матча'). ОЛЛФ в маркдауне пишет счёты и '1 : 1', и
+    '1 - 1' (дефис — стандартный разделитель в таблицах и шапках),
+    поэтому принимаем оба. Счёт принимается, только если он стоит
+    МЕЖДУ полными именами обеих команд: проверка по отдельным словам
+    пропускала цифры чужого сайдбара ('Казань' в ссылках турниров,
+    'Boom' в личных встречах — в канал улетали фальшивые '14:0' и
+    '13:8'). Цифры больше 15 отсекаем (время '19:10' и прочее).
+    Для несостоявшегося матча валидного счёта нет — вернём None,
+    итоговый пост пропустится."""
     if not md:
         return None
     idx = md.find("События матча")
     zone = md[:idx] if idx > 0 else md
-    for m in re.finditer(r"(\d{1,2})\s*:\s*(\d{1,2})", zone):
+    for m in SCORE_ANY.finditer(zone):
         a, b = int(m.group(1)), int(m.group(2))
         if a > 15 or b > 15:
             continue
@@ -877,14 +886,14 @@ def final_score_from_page(md, t1=None, t2=None):
             p2 = win.find(t2)
             if p1 < 0 or p2 < 0:
                 print("Кандидат счёта отклонён (нет полного имени "
-                      "команды рядом):", a, ":", b)
+                      "команды рядом):", a, "-", b)
                 continue
             s_pos = m.start() - lo
             if not ((p1 < s_pos < p2) or (p2 < s_pos < p1)):
                 print("Кандидат счёта отклонён (имена не по разные "
-                      "стороны счёта):", a, ":", b)
+                      "стороны счёта):", a, "-", b)
                 continue
-        print("Счёт из шапки страницы:", a, ":", b)
+        print("Счёт из шапки страницы:", a, "-", b)
         return [a, b]
     return None
 
@@ -1142,6 +1151,35 @@ def find_our_match(cal_md, today):
     return (pick["url"], pick["date"], pick["time"], pick["venue"])
 
 
+def venue_from_calendar(match_url):
+    """Локация для тестовых режимов (реплей/лог): календарь там
+    не качается, а на странице сыгранного кубкового матча площадки
+    нет. Достаём её из календаря турнира — по строке, в которой
+    упоминается ID нашего матча."""
+    cal = jina(CALENDAR_URL, must_contain=OUR_KEY)
+    if not cal:
+        print("Локация из календаря: календарь не скачался")
+        return None
+    mid = re.search(r"match/(\d+)", match_url)
+    if not mid:
+        return None
+    lines = cal.splitlines()
+    for i, raw in enumerate(lines):
+        if "match/" + mid.group(1) not in raw:
+            continue
+        wide = [x.strip() for x in lines[max(0, i - 4): i + 5]
+                if x.strip()]
+        dctx = " | ".join(wide)
+        print("Строка календаря (поиск локации):",
+              raw.strip()[:300], "| контекст:", dctx[:400])
+        vm = VENUE_CTX.search(dctx)
+        if vm:
+            return vm.group(0).strip()
+        return None
+    print("Наш матч в календаре не найден:", mid.group(1))
+    return None
+
+
 def announcement(opponent, mdate, time_str, loc, standings_text=""):
     ds = "уточняется"
     if mdate:
@@ -1226,6 +1264,17 @@ def load_page_bundle(match_url):
                 print("Время из числового фолбэка:", n_time)
         except Exception:
             print("Ошибка числового фолбэка (продолжаем):")
+            print(traceback.format_exc())
+    # Страница сыгранного кубкового матча локацию не отдаёт —
+    # добираем её из календаря турнира по ID нашего матча
+    if loc == "уточняется":
+        try:
+            v = venue_from_calendar(match_url)
+            if v:
+                loc = v
+                print("Локация из календаря:", loc)
+        except Exception:
+            print("Ошибка поиска локации в календаре (продолжаем):")
             print(traceback.format_exc())
     time_str = "уточняется"
     if mtime:
