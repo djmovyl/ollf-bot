@@ -1,0 +1,812 @@
+# -*- coding: utf-8 -*-
+"""postgen.py — генератор постов FC ITPROVIDER (голы, ассисты, милстоуны,
+карточки, автоголы) + кэш сезонной статистики со страницы заявки ОЛЛФ.
+
+Единое оформление всех постов:
+  эмодзи + ЖИРНЫЙ заголовок -> минута -> действие -> КРУПНЫЙ счёт
+  -> сезонная справка -> клише. Разделителей-линий нет.
+
+Имена игроков во всех постах — только в именительном падеже: клише
+построены так, что склонять ничего не нужно. В сезонной справке
+фигурирует только имя (без фамилии) — фамилия уже прозвучала выше,
+в строке действия."""
+
+import re
+import random
+from datetime import date
+
+EARLY_MIN = 3    # до 3-й минуты включительно — ранний гол
+LATE_MIN = 38    # с 38-й минуты — концовка (последние 3 минуты матча 2x20)
+
+TEAM_STATS_URL = ("https://ollf.ru/tournament/1068438/teams/"
+                  "application?team_id=1381365")
+
+# ================= КРУПНЫЙ СЧЁТ =================
+def score_big(our, opp):
+    """Счёт эмодзи-цифрами (кейкапы) — визуально крупнее текста.
+    Эмодзи собираются из код-поинтов: цифра + вариационный селектор +
+    combining keycap, чтобы копирование кода из чата не могло
+    испортить символы (готовые кейкапы ломались при переносе)."""
+    def digits(n):
+        return "".join(chr(48 + int(c)) + chr(0xFE0F) + chr(0x20E3)
+                       for c in str(n))
+    return digits(our) + " : " + digits(opp)
+
+# ================= КЛИШЕ (финальные строки) =================
+CLOSERS = {
+    # --- мы забили ---
+    "pride_goal": [
+        "Гол престижа — но мы не об этом думаем. Играем!",
+        "Один мяч взяли — продолжаем борьбу!",
+        "Такие мячи придают веры. Продолжаем!",
+        "Записали — и не останавливаемся!"],
+    "comeback_level": [
+        "Кто верил — тот не зря верил!",
+        "Счёт равный — и всё ещё в наших руках!",
+        "Отыгрались? Теперь давим дальше!",
+        "Равный счёт — наш стиль. Дальше — вперёд!"],
+    "comeback_ahead": [
+        "Отыгрались — и вышли вперёд! Это наш матч!",
+        "Такие камбэки запоминаются на сезон!",
+        "Не оставляем сопернику шансов на спокойствие!",
+        "Вели тяжёлую игру — теперь ведём счёт!"],
+    "closing_gap": [
+        "Каждый гол — шаг к победе!",
+        "Сократили разрыв? Теперь его закроем!",
+        "Продолжаем давить — пока не выйдем вперёд!",
+        "Идём по счёту дальше — и не останавливаемся!"],
+    "fresh": [
+        "Затишье закончилось — и в нашу пользу!",
+        "Очнулись в нужный момент!",
+        "Тишина на поле — но не в счёте!",
+        "Держали удар — и ответили!"],
+    "early_lead": [
+        "Первый гол — самый важный. Есть!",
+        "Быстрый гол — хороший знак!",
+        "Забрали инициативу с первых минут!",
+        "Начало положено — продолжаем в том же духе!"],
+    "leading_mid": [
+        "Контроль в наших руках. Продолжаем давить!",
+        "Держим темп — не расслабляемся!",
+        "Игра идёт по нашему плану!",
+        "Разница небольшая, но инициатива наша!"],
+    "dominating": [
+        "Контролируем всё — поле, темп, счёт!",
+        "Соперник уже не верит в камбэк!",
+        "Разрываем игру на части!",
+        "Так и живём — в чужой штрафной!"],
+    "ahead_late": [
+        "Держим счёт до сирены!",
+        "Последние минуты — наше время!",
+        "Ни секунды расслабления — но счёт за нами!",
+        "Дожимаем — и не отдаём!"],
+    "lead_restored": [
+        "Вернули своё! И не отдаём!",
+        "Счёт снова наш — так и должно быть!",
+        "Быстро исправились!",
+        "Ответили моментально!"],
+    # --- пропустили ---
+    "early_trail": [
+        "Пропускаем первыми — и отыгрываемся красиво. Классика.",
+        "Рано волноваться — матч только начался!",
+        "Первый гол не решает исход!",
+        "Спокойно! Это первая строчка сценария — и сюжет ещё наш!"],
+    "mid_trail": [
+        "Один мяч — не проблема. Это задача на ближайшие минуты.",
+        "Отстаём — значит, пора прибавить!",
+        "Пропустили — не значит проиграли!",
+        "Время есть. План тот же: забивать!"],
+    "pushing": [
+        "Хватит дарить. Дальше — только наша игра!",
+        "Собираемся и играем смелее!",
+        "Пока не поздно — возвращаемся в матч!",
+        "Два пропущенных — сигнал проснуться!"],
+    "angry": [
+        "Счёт горит — значит, играть можно смелее.",
+        "Время злости закончилось — время борьбы началось!",
+        "Пропускаем, но не сдаёмся!",
+        "Хватит смотреть — надо отвечать!"],
+    "crushed": [
+        "Мяч за мячом. До последней секунды.",
+        "Пропускаем, но не сдаёмся. Каждый гол — это бой.",
+        "Тяжело — но продолжаем играть!",
+        "Счёт не приговор, играем дальше!"],
+    "behind_late": [
+        "Догоняем до финальной сирены. До самой сирены!",
+        "Концовка — наше время. Ищем гол!",
+        "Пока звучит свисток — есть шанс!",
+        "До сирены боремся — шанс есть всегда!"],
+    "lost_lead": [
+        "Вели — и упустили. Вернём!",
+        "Ничего не потеряно — всё ещё в наших руках!",
+        "Быстро исправим эту ошибку!",
+        "Счёт равный — но характер наш!"],
+    "restoring_lead": [
+        "Опасно, время собраться!",
+        "Отрыв тает — прибавляем!",
+        "Соперник кусается — держим удар!",
+        "Держим счёт — и не отдаём!"],
+    "exchange_c": [
+        "Соперник отвечает быстро — ответим быстрее!",
+        "Качели продолжаются — кто выдержит?",
+        "Обмен голами — но последнее слово за нами!",
+        "Такие матчи любят зрители — а мы любим побеждать!"],
+    "fresh_c": [
+        "Затишье закончилось — и не в нашу пользу.",
+        "Очнулись — а счёт уже не наш. Возвращаем!",
+        "Долгая пауза сыграла с нами шутку. Исправим!",
+        "Пора просыпаться — играем!"],
+}
+
+# ================= КЛАССИФИКАТОР СИТУАЦИЙ =================
+def classify_goal(scored, our, opp, prev_our, prev_opp, minute,
+                  prev_goal, we_led_before, minutes_since):
+    """scored: True — забили, False — пропустили.
+    minutes_since: минут с прошлого гола; None — первое событие матча
+    (fresh/fresh_c не применяются).
+    we_led_before: вели ли мы по ходу матча до текущего момента."""
+    diff = our - opp
+    prev_diff = prev_our - prev_opp
+    early = minute <= EARLY_MIN
+    late = minute >= LATE_MIN
+
+    if scored:
+        # --- МЫ ЗАБИЛИ ---
+        # 1. Перед голом отставали: камбэк или сокращение разрыва
+        if prev_diff < 0:
+            if diff == 0:
+                # отыграли хотя бы один мяч, счёт выровняли
+                return "comeback_level"
+            if diff > 0:
+                if we_led_before:
+                    return "lead_restored"
+                if prev_diff <= -2:
+                    return "comeback_ahead"
+                return "closing_gap"
+            # diff < 0: сократили разрыв, но всё ещё позади
+            return "closing_gap"
+        # 2. Ведём (или вышли вперёд после равного счёта)
+        if diff > 0:
+            if we_led_before and prev_diff == 0:
+                return "lead_restored"
+            if late:
+                return "ahead_late"
+            if diff >= 3:
+                return "dominating"
+            if early:
+                return "early_lead"
+            return "leading_mid"
+        # diff == 0 при нашем голе возможен только из prev_diff == -1,
+        # что поймано выше; на всякий случай — затишье прервалось в нашу пользу
+        return "fresh"
+    # --- ПРОПУСТИЛИ ---
+    if prev_goal is None:
+        # первый гол матча: соперник открывает счёт
+        return "behind_late" if late else "early_trail"
+    if diff > 0:
+        # мы всё ещё ведём, соперник сократил отрыв
+        return "restoring_lead"
+    if prev_goal == "scored" and minutes_since is not None \
+            and minutes_since <= 5:
+        # мгновенный ответ соперника после нашего гола — качели
+        return "exchange_c"
+    if we_led_before:
+        # вели — и счёт уже не в нашу пользу
+        return "lost_lead"
+    if late:
+        return "behind_late"
+    if diff <= -4:
+        return "crushed"
+    if diff == -3:
+        return "angry"
+    if diff == -2:
+        return "pushing"
+    if minutes_since is not None and minutes_since >= 10:
+        return "fresh_c"
+    if early:
+        return "early_trail"
+    return "mid_trail"
+
+# ================= СТАТИСТИКА СТРАНИЦЫ ЗАЯВКИ =================
+# ВАЖНО: скобки в регэкспах собираются из кодов символов, чтобы строки
+# не обрывались при копировании кода из чата.
+LB = chr(91)
+RB = chr(93)
+LP = chr(40)
+RP = chr(41)
+
+def _flatten_md(s):
+    """Маркдаун в плоский текст: ссылки -> текст, таблицные | -> пробелы.
+    Цикл вместо регэкспа — без квадратных скобок в исходнике."""
+    s = s.replace("|", " ")
+    while True:
+        a = s.find(LB)
+        if a < 0:
+            break
+        b = s.find(RB, a + 1)
+        if b < 0:
+            break
+        c = s.find(LP, b + 1)
+        d = s.find(RP, c + 1) if c >= 0 else -1
+        if c < 0 or d < 0:
+            break
+        start = a - 1 if a > 0 and s[a - 1] == chr(33) else a
+        s = s[:start] + s[a + 1:b] + s[d + 1:]
+    return s
+
+def _num(s):
+    s = (s or "").strip()
+    return int(s) if s.isdigit() else 0
+
+# Классы для регэкспов (собираются без скобок в исходнике)
+NUMCLS = LP + LB + r"\d\-\u2013\u2014" + RB + RP
+NUMTOK = re.compile(NUMCLS)
+NAMEW = re.compile(LP + LB + "А-ЯЁ" + RB + LB + "а-яё" + RB + "+" + RP)
+DATE_RE = re.compile(r"\d{2}\.\d{2}\.\d{4}")
+AGE_RE = re.compile(r",\s*\d+\s*год\S*")
+
+def parse_squad_stats(text):
+    """Разбор заявки ПО СТРОКАМ: имя + дата рождения + 5 последних
+    числовых ячеек (игры, голы, передачи, ЖК, КК). Строка без полного
+    набора чисел просто пропускается — не смешивается с соседними."""
+    flat = _flatten_md(text or "")
+    players = {}
+    for raw in flat.splitlines():
+        if "*" in raw:
+            raw = raw.replace("*", " ")
+        dm = DATE_RE.search(raw)
+        if not dm:
+            continue
+        words = raw[:dm.start()].split()
+        if len(words) < 2:
+            continue
+        w1, w2 = words[-2], words[-1]
+        if not (NAMEW.fullmatch(w1) and NAMEW.fullmatch(w2)):
+            continue
+        tail = AGE_RE.sub(" ", raw[dm.end():])
+        toks = [t for t in tail.split() if NUMTOK.fullmatch(t)]
+        if len(toks) < 5:
+            continue
+        players[w1 + " " + w2] = {
+            "games": _num(toks[-5]), "goals": _num(toks[-4]),
+            "assists": _num(toks[-3]), "yellow": _num(toks[-2]),
+            "red": _num(toks[-1])}
+    return players
+
+def sync_season_stats(state, fetch, force=False, match_url=""):
+    """Синк кэша со страницы заявки: раз в день; force — после матча.
+    fetch — jina(url, must_contain=...). При сбое кэш не затираем."""
+    today = date.today().isoformat()
+    if not force and state.get("stats_synced_at") == today:
+        return state.get("season_stats", {})
+    try:
+        text = fetch(TEAM_STATS_URL, must_contain="teams/application")
+    except Exception:
+        return state.get("season_stats", {})
+    fresh = parse_squad_stats(text or "")
+    if fresh:
+        state["season_stats"] = fresh
+        state["stats_synced_at"] = today
+        print("Заявка:", len(fresh), "игроков распознано:")
+        for n in sorted(fresh):
+            d = fresh[n]
+            print("  ", n, "->", d["games"], d["goals"], d["assists"],
+                  d["yellow"], d["red"])
+    if force and match_url:
+        lst = state.setdefault("stats_synced_match_urls", [])
+        if match_url not in lst:
+            lst.append(match_url)
+    return state.get("season_stats", {})
+
+def find_player(season_stats, protocol_name):
+    if not protocol_name:
+        return None
+    if protocol_name in season_stats:
+        return protocol_name
+    surname = protocol_name.split()[0]
+    matches = [n for n in season_stats if n.startswith(surname)]
+    return matches[0] if len(matches) == 1 else None
+
+def season_count(state, player, kind, match_extra, match_url=""):
+    base = find_player(state.get("season_stats", {}), player)
+    if base is None:
+        return None
+    n = state["season_stats"][base].get(kind, 0)
+    if match_url and match_url in state.get("stats_synced_match_urls", []):
+        return n
+    return n + match_extra
+
+def first_name(full_name):
+    """Имя без фамилии: протокол даёт 'Фамилия Имя', берём последнее
+    слово. Используется в сезонной справке — фамилия уже прозвучала
+    в строке действия, повторять её второй раз не нужно."""
+    if not full_name:
+        return ""
+    return full_name.split()[-1] if " " in full_name else full_name
+
+# ================= ШАБЛОНЫ: НАШ ГОЛ (С ПАСОМ) =================
+# Имена только в именительном падеже — клише построены так,
+# что склонять ничего не нужно.
+SCORED_ASSIST_TEMPLATES = [
+    "🔥 <b>ГО-О-О-Л!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> забивает! "
+    "Голевой пас — <b>{assister}</b>.\n\n{score}{stats}\n\n{closer}",
+    "⚽ <b>ЕСТЬ ГОЛ!</b>\n\n⏱ {minute}' минута\n\nАвтор мяча — "
+    "<b>{scorer}</b>. Автор паса — <b>{assister}</b>.\n\n{score}{stats}\n\n"
+    "{closer}",
+    "💥 <b>ЗАБИВАЕМ!</b>\n\n⏱ {minute}' минута\n\nГол: <b>{scorer}</b>. "
+    "Пас: <b>{assister}</b>.\n\n{score}{stats}\n\n{closer}",
+    "🎉 <b>ТАБЛО ОБНОВЛЯЕТСЯ!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b>"
+    " записывает гол на свой счёт. Ассистент — <b>{assister}</b>.\n\n"
+    "{score}{stats}\n\n{closer}",
+    "✨ <b>ОТЛИЧНОЕ ИСПОЛНЕНИЕ!</b>\n\n⏱ {minute}' минута\n\nМяч в воротах "
+    "соперника! Гол — <b>{scorer}</b>, пас — <b>{assister}</b>.\n\n"
+    "{score}{stats}\n\n{closer}",
+    "🚀 <b>ЕЩЁ ОДИН В НАШУ КОПИЛКУ!</b>\n\n⏱ {minute}' минута\n\n"
+    "<b>{scorer}</b> забивает. Ассистент — <b>{assister}</b>.\n\n{score}"
+    "{stats}\n\n{closer}",
+    "💪 <b>НАШ ГОЛ!</b>\n\n⏱ {minute}' минута\n\nОтличная связка: "
+    "<b>{scorer}</b> забивает, <b>{assister}</b> отдаёт пас.\n\n{score}"
+    "{stats}\n\n{closer}",
+    "🎯 <b>В СЕТКУ!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> поражает "
+    "ворота соперника. Голевой пас — <b>{assister}</b>.\n\n{score}"
+    "{stats}\n\n{closer}",
+    "💥 <b>СНОВА В ДЕЛЕ!</b>\n\n⏱ {minute}' минута\n\nГол забит! Автор — "
+    "<b>{scorer}</b>, пас — <b>{assister}</b>.\n\n{score}{stats}\n\n"
+    "{closer}",
+    "⚡ <b>МЯЧ В ВОРОТАХ СОПЕРНИКА!</b>\n\n⏱ {minute}' минута\n\nЗабивает "
+    "<b>{scorer}</b>! Пас — <b>{assister}</b>.\n\n{score}{stats}\n\n"
+    "{closer}"]
+
+# ================= ШАБЛОНЫ: НАШ ГОЛ (БЕЗ ПАСА) =================
+SCORED_SOLO_TEMPLATES = [
+    "⚽ <b>ГОЛ!</b>\n\n⏱ {minute}' минута\n\nОтличился <b>{scorer}</b>."
+    "\n\n{score}{stats}\n\n{closer}",
+    "🎯 <b>ТОЧНО В ЦЕЛЬ!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> "
+    "записывает мяч на свой счёт.\n\n{score}{stats}\n\n{closer}",
+    "⚡ <b>ГОЛ! ЕСТЬ!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> забивает."
+    "\n\n{score}{stats}\n\n{closer}",
+    "💥 <b>ЗАНОСИМ В АКТИВ!</b>\n\n⏱ {minute}' минута\n\nГол на счету "
+    "<b>{scorer}</b>.\n\n{score}{stats}\n\n{closer}",
+    "🔥 <b>ОЧЕРЕДНОЙ ГОЛ!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> "
+    "снова в списке авторов.\n\n{score}{stats}\n\n{closer}",
+    "🎉 <b>ТАБЛО ОБНОВЛЯЕТСЯ!</b>\n\n⏱ {minute}' минута\n\nАвтор мяча — "
+    "<b>{scorer}</b>.\n\n{score}{stats}\n\n{closer}",
+    "✨ <b>ЕСТЬ МЯЧ!</b>\n\n⏱ {minute}' минута\n\nЗабивает <b>{scorer}</b>."
+    "\n\n{score}{stats}\n\n{closer}",
+    "🚀 <b>ГОЛ В НАШУ КОПИЛКУ!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b>"
+    " делает счёт в нашу пользу.\n\n{score}{stats}\n\n{closer}"]
+
+# ================= ШАБЛОНЫ: ПРОПУСТИЛИ =================
+CONCEDED_TEMPLATES = {
+    "early_trail": [
+        "🥅 <b>ПЕРВЫЙ ГОЛ В НАШИХ ВОРОТАХ</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник открывает счёт.\n\n{score}\n\n{closer}",
+        "😔 <b>ПРОПУСКАЕМ ПЕРВЫМИ</b>\n\n⏱ {minute}' минута\n\nСоперник "
+        "забивает первым.\n\n{score}\n\n{closer}"],
+    "mid_trail": [
+        "🥅 <b>ГОЛ В НАШИ ВОРОТА</b>\n\n⏱ {minute}' минута\n\nСоперник "
+        "делает счёт.\n\n{score}\n\n{closer}",
+        "😖 <b>ПРОПУСКАЕМ</b>\n\n⏱ {minute}' минута\n\nМяч в нашей сетке."
+        "\n\n{score}\n\n{closer}"],
+    "pushing": [
+        "🥅 <b>ВТОРОЙ ПОДРЯД — НЕ ПО ПЛАНУ</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник снова забивает.\n\n{score}\n\n{closer}",
+        "😤 <b>НЕ ДАЁМ СЕБЕ РАССЛАБИТЬСЯ</b>\n\n⏱ {minute}' минута\n\n"
+        "Второй пропущенный мяч за короткий отрезок.\n\n{score}\n\n{closer}"],
+    "angry": [
+        "🥅 <b>СЧЁТ РАСТЁТ — ВРЕМЯ ДЕЙСТВОВАТЬ</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник делает счёт.\n\n{score}\n\n{closer}",
+        "😤 <b>НЕ ВРЕМЯ СДАВАТЬСЯ</b>\n\n⏱ {minute}' минута\n\nСоперник "
+        "снова забивает.\n\n{score}\n\n{closer}"],
+    "crushed": [
+        "🥅 <b>ТЯЖЁЛЫЙ МОМЕНТ</b>\n\n⏱ {minute}' минута\n\nСоперник снова "
+        "забивает.\n\n{score}\n\n{closer}",
+        "😔 <b>МЯЧ В СЕТКЕ — СОБИРАЕМСЯ</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник делает счёт.\n\n{score}\n\n{closer}"],
+    "behind_late": [
+        "⏳ <b>ДО КОНЦА ОСТАЛИСЬ МИНУТЫ</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник делает счёт.\n\n{score}\n\n{closer}",
+        "🥅 <b>ПОСЛЕДНИЕ МИНУТЫ — НЕ СДАЁМСЯ</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник снова забивает.\n\n{score}\n\n{closer}"],
+    "lost_lead": [
+        "🥅 <b>УПУСТИЛИ ПРЕИМУЩЕСТВО</b>\n\n⏱ {minute}' минута\n\nСоперник "
+        "меняет картину матча.\n\n{score}\n\n{closer}",
+        "😖 <b>ОБИДНЫЙ ПОВОРОТ</b>\n\n⏱ {minute}' минута\n\nСоперник "
+        "отбирает лидерство.\n\n{score}\n\n{closer}"],
+    "restoring_lead": [
+        "🥅 <b>СОПЕРНИК СОКРАЩАЕТ ОТРЫВ</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник делает счёт.\n\n{score}\n\n{closer}",
+        "⚠️ <b>НЕ РАССЛАБЛЯЕМСЯ</b>\n\n⏱ {minute}' минута\n\nСоперник "
+        "снова забивает.\n\n{score}\n\n{closer}"],
+    "exchange_c": [
+        "🥅 <b>МГНОВЕННЫЙ ОТВЕТ СОПЕРНИКА</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник отвечает.\n\n{score}\n\n{closer}",
+        "🥅 <b>КАЧЕЛИ ПРОДОЛЖАЮТСЯ</b>\n\n⏱ {minute}' минута\n\nСоперник "
+        "снова забивает.\n\n{score}\n\n{closer}"],
+    "fresh_c": [
+        "🥅 <b>ЗАТИШЬЕ ЗАКОНЧИЛОСЬ ГОЛОМ СОПЕРНИКА</b>\n\n⏱ {minute}' "
+        "минута\n\nСоперник забивает после паузы.\n\n{score}\n\n{closer}",
+        "🥅 <b>ОЧНУЛИСЬ — А СЧЁТ УЖЕ НЕ НАШ</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник забивает.\n\n{score}\n\n{closer}"]}
+
+# ================= МИЛСТОУНЫ =================
+MILESTONE_GOAL_NAMES = {2: "ДУБЛЬ", 3: "ХЕТ-ТРИК", 4: "ПОКЕР",
+                        5: "ПЕНТА-ТРИК"}
+MILESTONE_GOAL_LOWER = {2: "дубль", 3: "хет-трик", 4: "покер",
+                        5: "пента-трик"}
+MILESTONE_ASSIST_LOWER = {2: "ассистентский дубль",
+                          3: "ассистентский хет-трик",
+                          4: "ассистентский покер",
+                          5: "ассистентский пента-трик"}
+
+CLOSERS["milestone_g2"] = [
+    "Дубль оформлен — но матч ещё не закончен!",
+    "Два мяча — это характер!",
+    "Один мяч — хорошо, два — лучше!"]
+CLOSERS["milestone_g3"] = [
+    "Хет-трик! Легенда этого вечера!",
+    "Три мяча — это уже история!",
+    "Шляпа надета — продолжаем!"]
+CLOSERS["milestone_g4"] = [
+    "Покер! Фантастика на поле!",
+    "Четыре мяча — вне всяких рамок!",
+    "Это уже не матч — это шоу!"]
+CLOSERS["milestone_g5"] = [
+    "Пента-трик! Легенда вечера!",
+    "Пять мячей — это уже легенда!",
+    "Пять — и это не предел!"]
+CLOSERS["milestone_g6"] = ["Шесть и больше — пусть пишут в протоколе!"]
+CLOSERS["milestone_a2"] = [
+    "Ассистентский дубль — партнёрам повезло с пасом!",
+    "Две передачи — мозг команды!"]
+CLOSERS["milestone_a3"] = [
+    "Ассистентский хет-трик! Маэстро паса!",
+    "Не забивает — но решает всё!"]
+CLOSERS["milestone_a4"] = ["Покер ассистента — фантастика!"]
+CLOSERS["milestone_a5"] = ["Пента-ассист — легенда вечера!"]
+
+# Первый гол игрока в чемпионате — особый пост. Ветка срабатывает
+# только когда сезонная статистика реально распознана (sg == 1
+# включает текущий гол); если заявка не скачалась — выйдет обычный пост.
+MILESTONE_G1_TEMPLATES = [
+    "🎉 <b>ПЕРВЫЙ ГОЛ В КУБКЕ!</b>\n\n⏱ {minute}' минута\n\n{scorer} "
+    "открывает счёт своим голам в Кубке Лиги!{assist_line}\n\n{score}"
+    "{stats}\n\n{closer}",
+    "🌟 <b>ДЕБЮТНЫЙ МЯЧ!</b>\n\n⏱ {minute}' минута\n\n{scorer} забивает "
+    "свой первый гол в Кубке Лиги!{assist_line}\n\n{score}{stats}"
+    "\n\n{closer}",
+    "🥇 <b>ПЕРВЫЙ МЯЧ В КУБКЕ!</b>\n\n⏱ {minute}' минута\n\n{scorer} "
+    "записывает первый гол в Кубке Лиги на свой счёт!{assist_line}"
+    "\n\n{score}{stats}\n\n{closer}"]
+
+CLOSERS["milestone_g1"] = [
+    "Первый мяч — самый важный. Дальше — больше!",
+    "С первого гола и до последнего — вперёд!",
+    "Начало положено — не останавливаемся!",
+    "Первый гол — всегда особенный! Поздравляем!"]
+
+MILESTONE_G_TEMPLATES = [
+    "🎩 <b>{ms_name}!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> "
+    "оформляет {ms_lower} — {n}-й мяч в этом матче!{assist_line}\n\n"
+    "{score}{stats}\n\n{closer}",
+    "💥 <b>{ms_name}!</b>\n\n⏱ {minute}' минута\n\nАвтор {n}-го мяча — "
+    "<b>{scorer}</b>!{assist_line}\n\n{score}{stats}\n\n{closer}",
+    "🔥 <b>{ms_name}!</b>\n\n⏱ {minute}' минута\n\n<b>{scorer}</b> "
+    "продолжает поражать: теперь {n} {n_word} за матч!{assist_line}\n\n"
+    "{score}{stats}\n\n{closer}"]
+
+MILESTONE_A_TEMPLATES = [
+    "🧠 <b>РАЗДАЮТ МЯЧИ!</b>\n\n⏱ {minute}' минута\n\nГол забивает "
+    "{scorer}. {assist_ms} оформляет <b>{assister}</b>!\n\n{score}"
+    "{stats}\n\n{closer}",
+    "🎯 <b>ГОЛЕВОЙ ПАС В ДЕЛЕ!</b>\n\n⏱ {minute}' минута\n\nГол: "
+    "{scorer}. Ассистент: <b>{assister}</b> — {assist_ms}!\n\n{score}"
+    "{stats}\n\n{closer}"]
+
+# ================= КАРТОЧКИ =================
+CARD_TEMPLATES = {
+    "yellow_our": [
+        "🟡 <b>ПРЕДУПРЕЖДЕНИЕ У НАС</b>\n\n⏱ {minute}' минута\n\n"
+        "<b>{player}</b> получает жёлтую карточку.\n\n{closer}",
+        "🟡 <b>ЖЁЛТАЯ У НАС</b>\n\n⏱ {minute}' минута\n\nПредупреждение "
+        "зарабатывает <b>{player}</b>.\n\n{closer}"],
+    "yellow_opp": [
+        "🟡 <b>ЖЁЛТАЯ У СОПЕРНИКА</b>\n\n⏱ {minute}' минута\n\n"
+        "Соперник получает предупреждение.\n\n{closer}",
+        "🟡 <b>СОПЕРНИК ПРЕДУПРЕЖДЁН</b>\n\n⏱ {minute}' минута\n\n"
+        "Жёлтую карточку зарабатывает игрок соперника.\n\n{closer}"],
+    "red_our": [
+        "🚨 <b>КРАСНАЯ КАРТОЧКА У НАС</b>\n\n⏱ {minute}' минута\n\n"
+        "<b>{player}</b> покидает поле.\n\n{closer}",
+        "🚨 <b>УДАЛЕНИЕ</b>\n\n⏱ {minute}' минута\n\nКрасную получает "
+        "<b>{player}</b>.\n\n{closer}"],
+    "red_opp": [
+        "🚨 <b>УДАЛЕНИЕ У СОПЕРНИКА</b>\n\n⏱ {minute}' минута\n\n"
+        "Игрок соперника получает красную.\n\n{closer}",
+        "🚨 <b>КРАСНАЯ У СОПЕРНИКА!</b>\n\n⏱ {minute}' минута\n\n"
+        "Игрок соперника покидает поле.\n\n{closer}"],
+    "two_yellows": [
+        "🟥 <b>ДВЕ ЖЁЛТЫЕ — КРАСНАЯ</b>\n\n⏱ {minute}' минута\n\n"
+        "<b>{player}</b> покидает поле: вторая жёлтая.\n\n{closer}",
+        "🟥 <b>ВТОРАЯ ЖЁЛТАЯ — УДАЛЕНИЕ</b>\n\n⏱ {minute}' минута\n\n"
+        "<b>{player}</b> отправляется в раздевалку.\n\n{closer}"]}
+CLOSERS["card_yellow_our"] = [
+    "Держим голову холодной — впереди ещё игра!",
+    "Дисциплина важнее эмоций!",
+    "Аккуратнее в следующих эпизодах!"]
+CLOSERS["card_yellow_opp"] = [
+    "Сопернику тоже горячо — используем!",
+    "Давим, пока они нервничают!"]
+CLOSERS["card_red_our"] = [
+    "Соберёмся ещё крепче — играем в меньшинстве!",
+    "Тяжело, но не отступаем!",
+    "Играем компактнее — держим оборону!"]
+CLOSERS["card_red_opp"] = [
+    "Наш шанс — дожимаем!",
+    "Численный перевес — используем на максимум!"]
+CLOSERS["card_two_yellows"] = [
+    "Учимся на ошибках — и играем дальше!"]
+
+# ================= АВТОГОЛЫ =================
+AUTOGOAL_OUR_TEMPLATES = [
+    "⚽ <b>АВТОГОЛ — В НАШУ ПОЛЬЗУ!</b>\n\n⏱ {minute}' минута\n\nСоперник "
+    "срезает мяч в свои ворота.\n\n{score}\n\n{closer}",
+    "🔄 <b>ПОДАРОК ОТ СОПЕРНИКА!</b>\n\n⏱ {minute}' минута\n\nАвтогол — "
+    "счёт в нашу пользу.\n\n{score}\n\n{closer}"]
+AUTOGOAL_AGAINST_TEMPLATES = [
+    "🥅 <b>АВТОГОЛ В НАШИ ВОРОТА</b>\n\n⏱ {minute}' минута\n\nМяч после "
+    "рикошета оказывается в нашей сетке.\n\n{score}\n\n{closer}",
+    "😖 <b>ТАКОЕ БЫВАЕТ</b>\n\n⏱ {minute}' минута\n\nАвтогол — счёт "
+    "меняется не в нашу пользу.\n\n{score}\n\n{closer}"]
+CLOSERS["autogoal_our"] = [
+    "Гол есть гол — записываем!",
+    "Удача сегодня на нашей стороне!",
+    "Не важно как — важно что! Засчитано!"]
+CLOSERS["autogoal_against"] = [
+    "Бывает. Никого не виним — идём дальше!",
+    "Собираемся и продолжаем борьбу!",
+    "Такие мячи случаются у всех. Двигаемся вперёд!"]
+
+# ================= ВЫБОР БЕЗ ПОВТОРОВ =================
+def pick_tpl(state, pool):
+    """Случайный шаблон без повторов в рамках матч-дня: помним все
+    использованные (state['used_tpl']) и выбираем из неиспользованных.
+    Когда пул исчерпан — начинаем круг заново."""
+    pool = list(pool)
+    used = state.setdefault("used_tpl", [])
+    fresh = [p for p in pool if p not in used]
+    if not fresh:
+        used.clear()
+        fresh = pool
+    tpl = random.choice(fresh)
+    used.append(tpl)
+    return tpl
+
+def pick_closer(state, key):
+    """То же для клише, но память ведётся отдельно для каждой ситуации
+    (ключ классификатора): качели, камбэк и карточки не вычёркивают
+    клише друг друга."""
+    pool = list(CLOSERS.get(key) or [""])
+    used_map = state.setdefault("used_closer", {})
+    used = used_map.setdefault(key, [])
+    fresh = [c for c in pool if c not in used]
+    if not fresh:
+        used.clear()
+        fresh = pool
+    c = random.choice(fresh)
+    used.append(c)
+    return c
+
+def esc(s):
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;") \
+        .replace(">", "&gt;")
+
+def plural(n, one, few, many):
+    n = abs(n) % 100
+    if 11 <= n <= 19:
+        return many
+    n %= 10
+    if n == 1:
+        return one
+    if 2 <= n <= 4:
+        return few
+    return many
+
+# ================= СБОРКА ПОСТОВ =================
+def build_goal_post(state, scored, scorer, assister, minute, our, opp,
+                    prev_our, prev_opp, prev_goal, we_led_before,
+                    minutes_since, scorer_match_goals=0,
+                    assister_match_assists=0, match_url=""):
+    key = classify_goal(scored, our, opp, prev_our, prev_opp, minute,
+                        prev_goal, we_led_before, minutes_since)
+    closer = pick_closer(state, key)
+    # счётчики уже включают текущее событие — так их отдаёт bot.py
+    g_n = scorer_match_goals if scored else 0
+    a_n = assister_match_assists if assister else 0
+    scorer_ms = g_n if (scored and g_n >= 2) else None
+    assist_ms = a_n if (assister and a_n >= 2) else None
+    score = score_big(our, opp)
+
+    if scored:
+        scorer_b = "<b>" + esc(scorer) + "</b>"
+        sg = season_count(state, scorer, "goals", scorer_match_goals,
+                          match_url)
+        # --- ПЕРВЫЙ ГОЛ ИГРОКА В ЧЕМПИОНАТЕ ---
+        # sg == 1: до этого матча голов не было, сезонная цифра
+        # включает текущий гол. Строка '1-й гол' в справке не нужна —
+        # об этом говорит сам заголовок.
+        if sg == 1:
+            assist_line = ""
+            stats_lines = []
+            if assister:
+                aa = season_count(state, assister, "assists",
+                                  assister_match_assists, match_url)
+                assist_line = " Пас — <b>" + esc(assister) + "</b>."
+                if aa is not None:
+                    stats_lines.append("🎯 " + esc(first_name(assister))
+                                       + " — " + str(aa)
+                                       + "-я передача в сезоне")
+            stats_block = ("\n\n" + "\n".join(stats_lines)) \
+                if stats_lines else ""
+            closer = pick_closer(state, "milestone_g1")
+            tpl = pick_tpl(state, MILESTONE_G1_TEMPLATES)
+            return tpl.format(scorer=scorer_b, assist_line=assist_line,
+                              minute=minute, score=score,
+                              stats=stats_block, closer=closer)
+        # --- СЕЗОННАЯ СПРАВКА СТОЛБИКОМ, ТОЛЬКО ИМЕНА ---
+        stats_lines = []
+        if sg is not None:
+            stats_lines.append("📊 " + esc(first_name(scorer)) + " — "
+                               + str(sg) + "-й гол в чемпионате")
+        assist_line = ""
+        if assister:
+            aa = season_count(state, assister, "assists",
+                              assister_match_assists, match_url)
+            assist_line = " Пас — <b>" + esc(assister) + "</b>."
+            if aa is not None:
+                stats_lines.append("🎯 " + esc(first_name(assister))
+                                   + " — " + str(aa)
+                                   + "-я передача в сезоне")
+        stats_block = ("\n\n" + "\n".join(stats_lines)) if stats_lines else ""
+        # милстоун забившего — приоритет перед пас-милстоуном
+        if scorer_ms:
+            if scorer_ms > 5:
+                ms_name = str(g_n) + " МЯЧЕЙ"
+                ms_lower = str(g_n) + " мячей"
+            else:
+                ms_name = MILESTONE_GOAL_NAMES.get(scorer_ms)
+                ms_lower = MILESTONE_GOAL_LOWER[scorer_ms]
+            closer = pick_closer(state,
+                                 "milestone_g" + str(min(scorer_ms, 6)))
+            tpl = pick_tpl(state, MILESTONE_G_TEMPLATES)
+            return tpl.format(ms_name=ms_name, ms_lower=ms_lower, n=g_n,
+                              n_word=plural(g_n, "мяч", "мяча", "мячей"),
+                              scorer=scorer_b, assist_line=assist_line,
+                              minute=minute, score=score,
+                              stats=stats_block, closer=closer)
+        if assist_ms:
+            closer = pick_closer(state,
+                                 "milestone_a" + str(min(assist_ms, 5)))
+            tpl = pick_tpl(state, MILESTONE_A_TEMPLATES)
+            return tpl.format(scorer=scorer_b,
+                              assister=esc(assister),
+                              minute=minute, score=score,
+                              stats=stats_block,
+                              assist_ms=MILESTONE_ASSIST_LOWER.get(
+                                  assist_ms,
+                                  str(assist_ms) + " передач"),
+                              closer=closer)
+        if assister:
+            tpl = pick_tpl(state, SCORED_ASSIST_TEMPLATES)
+            return tpl.format(minute=minute, scorer=scorer_b,
+                              assister="<b>" + esc(assister) + "</b>",
+                              score=score, stats=stats_block, closer=closer)
+        tpl = pick_tpl(state, SCORED_SOLO_TEMPLATES)
+        return tpl.format(minute=minute, scorer=scorer_b, score=score,
+                          stats=stats_block, closer=closer)
+    # пропустили
+    pool = CONCEDED_TEMPLATES.get(key) or CONCEDED_TEMPLATES["mid_trail"]
+    tpl = pick_tpl(state, pool)
+    return tpl.format(minute=minute, score=score, closer=closer)
+
+def build_card_post(state, ctype, ours, player, minute, yellow_before=0):
+    player_b = "<b>" + esc(player) + "</b>"
+    if ctype == "red" and ours and yellow_before >= 1:
+        tpl = pick_tpl(state, CARD_TEMPLATES["two_yellows"])
+        return tpl.format(player=player_b, minute=minute,
+                          closer=pick_closer(state, "card_two_yellows"))
+    if ctype == "red":
+        if ours:
+            tpl = pick_tpl(state, CARD_TEMPLATES["red_our"])
+            closer = pick_closer(state, "card_red_our")
+        else:
+            tpl = pick_tpl(state, CARD_TEMPLATES["red_opp"])
+            closer = pick_closer(state, "card_red_opp")
+        return tpl.format(player=player_b, minute=minute, closer=closer)
+    if ours:
+        tpl = pick_tpl(state, CARD_TEMPLATES["yellow_our"])
+        closer = pick_closer(state, "card_yellow_our")
+    else:
+        tpl = pick_tpl(state, CARD_TEMPLATES["yellow_opp"])
+        closer = pick_closer(state, "card_yellow_opp")
+    return tpl.format(player=player_b, minute=minute, closer=closer)
+
+def build_autogoal_post(state, ours, minute, our, opp):
+    score = score_big(our, opp)
+    if ours:
+        tpl = pick_tpl(state, AUTOGOAL_OUR_TEMPLATES)
+        closer = pick_closer(state, "autogoal_our")
+    else:
+        tpl = pick_tpl(state, AUTOGOAL_AGAINST_TEMPLATES)
+        closer = pick_closer(state, "autogoal_against")
+    return tpl.format(minute=minute, score=score, closer=closer)
+
+# ================= ДЕМО =================
+def run_demo():
+    st = {"season_stats": {
+              "Харисов Алмаз": {"games": 4, "goals": 3, "assists": 1,
+                                "yellow": 0, "red": 0},
+              "Ираев Максим": {"games": 6, "goals": 2, "assists": 1,
+                               "yellow": 1, "red": 0},
+              "Закиров Ильнар": {"games": 4, "goals": 0, "assists": 1,
+                                 "yellow": 1, "red": 0}},
+          "stats_synced_at": "2026-11-24",
+          "stats_synced_match_urls": []}
+    # события матча (et, ours, minute, player, assist, our, opp)
+    evs = [
+        ("goal", False, 2, "?", None, 0, 1),
+        ("goal", True, 6, "Калякулин Даниил", None, 1, 1),
+        ("goal", False, 8, "?", None, 1, 2),
+        ("goal", True, 21, "Харисов Алмаз", "Закиров Ильнар", 2, 2),
+        ("goal", False, 30, "?", None, 2, 3),
+        ("goal", True, 35, "Харисов Алмаз", "Калякулин Даниил", 3, 3),
+        ("goal", True, 38, "Ираев Максим", "Харисов Алмаз", 4, 3),
+        ("goal", False, 40, "?", None, 4, 4),
+        # первый гол Закирова в чемпионате — сработает ветка G1
+        ("goal", True, 44, "Закиров Ильнар", "Харисов Алмаз", 5, 4),
+        ("autogoal", True, 12, "автогол", None, 0, 0),
+        ("yellow", True, 18, "Закиров Ильнар", None, 0, 0),
+        ("red", True, 39, "Семёнов Александр", None, 0, 0)]
+    prev_our = prev_opp = 0
+    prev_goal = None
+    prev_min = None
+    we_led = False
+    counts = {}
+    for et, ours, minute, player, assist, our, opp in evs:
+        if et == "goal":
+            # счётчики матча обновляем ДО поста: цифра в посте
+            # включает и текущий гол/пас — как в bot.py
+            if ours:
+                counts.setdefault(player, {"goals": 0, "assists": 0,
+                                           "yellow": 0})
+                counts[player]["goals"] += 1
+                if assist:
+                    counts.setdefault(assist, {"goals": 0, "assists": 0,
+                                               "yellow": 0})
+                    counts[assist]["assists"] += 1
+            post = build_goal_post(
+                st, ours, player, assist, minute, our, opp,
+                prev_our, prev_opp, prev_goal, we_led,
+                (minute - prev_min) if prev_min is not None else None,
+                counts.get(player, {}).get("goals", 0),
+                counts.get(assist, {}).get("assists", 0) if assist else 0,
+                match_url="demo")
+            prev_our, prev_opp = our, opp
+            prev_goal = "scored" if ours else "conceded"
+            prev_min = minute
+            if our > opp:
+                we_led = True
+        elif et == "autogoal":
+            post = build_autogoal_post(st, ours, minute, our, opp)
+        elif et in ("yellow", "red"):
+            post = build_card_post(st, et, ours, player, minute,
+                                   counts.get(player, {}).get("yellow", 0))
+            if et == "yellow":
+                counts.setdefault(player, {"goals": 0, "assists": 0,
+                                           "yellow": 0})
+                counts[player]["yellow"] += 1
+        print("=" * 60)
+        print(post.replace("<b>", "").replace("</b>", ""))
+
+if __name__ == "__main__":
+    run_demo()
