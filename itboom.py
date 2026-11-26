@@ -562,7 +562,7 @@ def pin_tokens(text):
         while toks and toks[0].lower() in CITY_WORDS:
             toks.pop(0)
         if toks:
-            out.append((i, " ".join(toks))))
+            out.append((i, " ".join(toks)))
         i = text.find("📍", i + 1)
     return out
 
