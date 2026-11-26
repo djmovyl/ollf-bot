@@ -1,7 +1,7 @@
 import os, re, time, json, requests, traceback
 from datetime import datetime, timedelta, timezone
 
-VERSION = "bot-2.40-itboom (26.11.2026)"
+VERSION = "bot-2.41-itboom (26.11.2026)"
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL = os.environ.get("CHANNEL", "")
@@ -30,6 +30,12 @@ OUR_KEY = "ITPROVIDER"
 MODE = os.environ.get("BOT_MODE", "prod")
 # Для совместимости со старыми проверками
 PAST_MATCH = MODE != "prod"
+# MATCH_URL — матч для тестовых режимов (test_log/test_live).
+# Сейчас здесь ПРЕДСТОЯЩИЙ реванш 29.11 (счёт '- : -', протокол пуст):
+# реплей по нему корректно пропустит состав и итоговый пост.
+# Для полноценного реплея со всеми событиями замени ID на СЫГРАННЫЙ
+# матч 01.11 (1:1) — ссылку бери из блока «Личные встречи» на этой же
+# странице. Для боевого режима MATCH_URL не используется.
 MATCH_URL = "https://ollf.ru/match/6023649"
 START_H, START_M = 18, 0
 DURATION_MIN = 75
@@ -481,6 +487,12 @@ def team_row(clean, name):
 
 
 def parse_standings(tmd, t1, t2):
+    # Сетка кубка ещё не сформирована ('Этапы турнира не сформированы')
+    # — не тратим время на разбор и не ловим чужие таблицы из сайдбара.
+    # Когда ОЛЛФ сформирует сетку — гвард перестанет срабатывать сам.
+    if tmd and "не сформированы" in tmd:
+        print("Таблица: этапы турнира не сформированы — блок опускаем")
+        return {}
     clean = flatten_table_md(tmd)
     res = {}
     for team in (t1, t2):
@@ -550,7 +562,7 @@ def pin_tokens(text):
         while toks and toks[0].lower() in CITY_WORDS:
             toks.pop(0)
         if toks:
-            out.append((i, " ".join(toks)))
+            out.append((i, " ".join(toks))))
         i = text.find("📍", i + 1)
     return out
 
@@ -841,22 +853,31 @@ def classify_card(html, tstr, player):
     return "yellow", frag
 
 
-def final_score_from_page(md):
+def final_score_from_page(md, t1=None, t2=None):
     """Фолбэк итогового счёта из шапки страницы матча (зона до
-    'События матча'). Берём последний правдоподобный счёт: каждая
-    цифра не больше 15, чтобы не принять за счёт время '20:00'."""
+    'События матча'). Счёт принимается, только если рядом (окно
+    300 символов) упоминаются ОБЕ команды — иначе в фолбэк попадают
+    цифры чужого сайдбара (на странице кубка так вылезло '14:0').
+    Каждая цифра не больше 15, чтобы не принять за счёт время '20:00'.
+    Для несостоявшегося матча шапка '- : -' цифр не даёт — вернём None,
+    итоговый пост пропустится."""
     if not md:
         return None
     idx = md.find("События матча")
     zone = md[:idx] if idx > 0 else md
-    best = None
     for m in re.finditer(r"(\d{1,2})\s*:\s*(\d{1,2})", zone):
         a, b = int(m.group(1)), int(m.group(2))
-        if a <= 15 and b <= 15:
-            best = [a, b]
-    if best:
-        print("Счёт из шапки страницы:", best[0], ":", best[1])
-    return best
+        if a > 15 or b > 15:
+            continue
+        if t1 and t2:
+            win = zone[max(0, m.start() - 300): m.end() + 300]
+            t1_ok = any(p in win for p in t1.split())
+            t2_ok = any(p in win for p in t2.split())
+            if not (t1_ok and t2_ok):
+                continue
+        print("Счёт из шапки страницы:", a, ":", b)
+        return [a, b]
+    return None
 
 
 def render_post(ev):
@@ -1226,7 +1247,7 @@ def test_mode():
             info += " (пас: " + e["assist"] + ")"
         print("СОБЫТИЕ:", e["et"], str(e["minute"]) + "'",
               info, e["score"], "| наши:", e["ours"])
-    fs = final_score_from_page(b["md"])
+    fs = final_score_from_page(b["md"], b["t1"], b["t2"])
     print("Фолбэк счёта из шапки:", fs)
     if pg is not None:
         st = {"seen": [], "last_tpl": None, "last_closer": None,
@@ -1287,7 +1308,7 @@ def replay_full():
     # --- 6. МАТЧ ЗАВЕРШЁН ---
     sc = events[-1]["score"] if events else None
     if not sc:
-        sc = final_score_from_page(b["md"])
+        sc = final_score_from_page(b["md"], t1, t2)
     if not sc:
         print("Итоговый счёт не определён — итоговый пост пропущен")
         return
@@ -1573,7 +1594,7 @@ def main():
         if final_ok:
             st["final"] = True
             if not events:
-                page_sc = final_score_from_page(md)
+                page_sc = final_score_from_page(md, t1, t2)
                 if page_sc:
                     st["score"] = page_sc
             save_state(st)
