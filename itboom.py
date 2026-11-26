@@ -31,12 +31,10 @@ MODE = os.environ.get("BOT_MODE", "prod")
 # Для совместимости со старыми проверками
 PAST_MATCH = MODE != "prod"
 # MATCH_URL — матч для тестовых режимов (test_log/test_live).
-# Сейчас здесь ПРЕДСТОЯЩИЙ реванш 29.11 (счёт '- : -', протокол пуст):
-# реплей по нему корректно пропустит состав и итоговый пост.
-# Для полноценного реплея со всеми событиями замени ID на СЫГРАННЫЙ
-# матч 01.11 (1:1) — ссылку бери из блока «Личные встречи» на этой же
-# странице. Для боевого режима MATCH_URL не используется.
-MATCH_URL = "https://ollf.ru/match/6023649"
+# Сейчас здесь СЫГРАННЫЙ кубковый матч 01.11.2026 FC ITPROVIDER 1:1 Boom
+# (ссылка из блока «Личные встречи» страницы реванша 6023649).
+# Для боевого режима MATCH_URL не используется.
+MATCH_URL = "https://ollf.ru/match/5962236"
 START_H, START_M = 18, 0
 DURATION_MIN = 75
 # Окно состава растянуто до 20 минут до старта — при редких прогонах
@@ -58,7 +56,7 @@ try:
     import postgen_itboom as pg
 except ImportError:
     pg = None
-    print("postgen.py не найден — посты пойдут старым форматом")
+    print("postgen_itboom.py не найден — посты пойдут старым форматом")
 
 # Поля сезонной статистики: переживают ежедневный сброс состояния
 STATS_KEYS = ("season_stats", "stats_synced_at", "stats_synced_match_urls")
@@ -855,12 +853,14 @@ def classify_card(html, tstr, player):
 
 def final_score_from_page(md, t1=None, t2=None):
     """Фолбэк итогового счёта из шапки страницы матча (зона до
-    'События матча'). Счёт принимается, только если рядом (окно
-    300 символов) упоминаются ОБЕ команды — иначе в фолбэк попадают
-    цифры чужого сайдбара (на странице кубка так вылезло '14:0').
-    Каждая цифра не больше 15, чтобы не принять за счёт время '20:00'.
-    Для несостоявшегося матча шапка '- : -' цифр не даёт — вернём None,
-    итоговый пост пропустится."""
+    'События матча'). Счёт принимается, только если он стоит МЕЖДУ
+    полными именами обеих команд (в шапке ОЛЛФ счёт всегда между
+    названиями). Прежняя проверка по отдельным словам пропускала
+    цифры чужого сайдбара: 'Казань' встречается в ссылках турниров,
+    'Boom' — в личных встречах (в канал улетали фальшивые '14:0' и
+    '13:8'). Для несостоявшегося матча шапка '- : -' цифр не даёт —
+    вернём None, итоговый пост пропустится. Каждая цифра не больше 15,
+    чтобы не принять за счёт время '20:00'."""
     if not md:
         return None
     idx = md.find("События матча")
@@ -870,10 +870,19 @@ def final_score_from_page(md, t1=None, t2=None):
         if a > 15 or b > 15:
             continue
         if t1 and t2:
-            win = zone[max(0, m.start() - 300): m.end() + 300]
-            t1_ok = any(p in win for p in t1.split())
-            t2_ok = any(p in win for p in t2.split())
-            if not (t1_ok and t2_ok):
+            lo = max(0, m.start() - 200)
+            hi = m.end() + 200
+            win = zone[lo:hi]
+            p1 = win.find(t1)
+            p2 = win.find(t2)
+            if p1 < 0 or p2 < 0:
+                print("Кандидат счёта отклонён (нет полного имени "
+                      "команды рядом):", a, ":", b)
+                continue
+            s_pos = m.start() - lo
+            if not ((p1 < s_pos < p2) or (p2 < s_pos < p1)):
+                print("Кандидат счёта отклонён (имена не по разные "
+                      "стороны счёта):", a, ":", b)
                 continue
         print("Счёт из шапки страницы:", a, ":", b)
         return [a, b]
@@ -1255,7 +1264,7 @@ def test_mode():
         sync_stats_safe(st, match_url=MATCH_URL)
         post_events(events, st, MATCH_URL, do_send=False)
     else:
-        print("postgen.py не найден — посты не собраны")
+        print("postgen_itboom.py не найден — посты не собраны")
 
 
 def replay_full():
@@ -1300,7 +1309,7 @@ def replay_full():
         print("СОБЫТИЕ:", e["et"], str(e["minute"]) + "'",
               info, e["score"], "| наши:", e["ours"])
     if pg is None:
-        print("postgen.py не найден — события пойдут фолбэк-форматом")
+        print("postgen_itboom.py не найден — события пойдут фолбэк-форматом")
     st = {"seen": [], "last_tpl": None, "last_closer": None,
           "season_stats": {}, "stats_synced_match_urls": []}
     sync_stats_safe(st, match_url=MATCH_URL)
